@@ -180,23 +180,31 @@ class IdoimApp:
         ).pack(anchor=tk.W)
 
         # 文本输入区 - 深色背景白色字体
-        input_label = tk.Label(self.import_frame, text="📝 粘贴成语文本：", font=self.font_normal, anchor=tk.W)
-        input_label.pack(fill=tk.X, padx=15, pady=(5, 0))
-
-        self.import_text = scrolledtext.ScrolledText(
-            self.import_frame, font=("Courier New", 12), wrap=tk.WORD,
-            bg="#1E1E1E", fg="#FFFFFF", insertbackground="white",
-            selectbackground="#264F78", selectforeground="white",
-            relief=tk.SUNKEN, bd=2
-        )
-        self.import_text.pack(fill=tk.BOTH, expand=True, padx=15, pady=(2, 5))
-
-        # 按钮区 - 独立醒目区域
+        # 按钮区 - 独立醒目区域（放在顶部，始终可见）
         btn_frame = tk.LabelFrame(
             self.import_frame, text="  操作  ",
             font=self.font_normal, padx=10, pady=10
         )
         btn_frame.pack(fill=tk.X, padx=15, pady=5)
+
+        # 使用 PanedWindow 让上下两个文本区可自由拖拽调整大小
+        import_paned = ttk.PanedWindow(self.import_frame, orient=tk.VERTICAL)
+        import_paned.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 10))
+
+        # 上半部分：输入区
+        top_frame = tk.Frame(import_paned)
+        import_paned.add(top_frame, weight=1)
+
+        input_label = tk.Label(top_frame, text="📝 粘贴成语文本：", font=self.font_normal, anchor=tk.W)
+        input_label.pack(fill=tk.X)
+
+        self.import_text = scrolledtext.ScrolledText(
+            top_frame, font=("Courier New", 12), wrap=tk.WORD,
+            bg="#1E1E1E", fg="#FFFFFF", insertbackground="white",
+            selectbackground="#264F78", selectforeground="white",
+            relief=tk.SUNKEN, bd=2
+        )
+        self.import_text.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
 
         btn_row1 = tk.Frame(btn_frame)
         btn_row1.pack(fill=tk.X, pady=(0, 5))
@@ -229,18 +237,21 @@ class IdoimApp:
             command=self._do_import
         ).pack(side=tk.RIGHT)
 
-        # 预览结果区
+        # 下半部分：预览区
+        bottom_frame = tk.Frame(import_paned)
+        import_paned.add(bottom_frame, weight=1)
+
         preview_label = tk.Label(
-            self.import_frame, text="📋 解析预览：",
+            bottom_frame, text="📋 解析预览：",
             font=self.font_normal, anchor=tk.W
         )
-        preview_label.pack(fill=tk.X, padx=15)
+        preview_label.pack(fill=tk.X)
 
         self.preview_text = scrolledtext.ScrolledText(
-            self.import_frame, font=self.font_small, wrap=tk.WORD,
-            height=6, bg="#F5F5DC", fg="#333333", relief=tk.GROOVE, bd=2
+            bottom_frame, font=self.font_small, wrap=tk.WORD,
+            bg="#F5F5DC", fg="#333333", relief=tk.GROOVE, bd=2
         )
-        self.preview_text.pack(fill=tk.X, padx=15, pady=(0, 10))
+        self.preview_text.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
 
     def _preview_import(self):
         """预览解析结果（带错误提示）"""
@@ -505,35 +516,35 @@ class IdoimApp:
             self.detail_text.config(state=tk.DISABLED)
 
     def _show_idiom_detail(self, idiom):
-        """用带颜色标签的方式显示成语详情（统一 label：content 格式）"""
+        """用带颜色标签的方式显示成语详情"""
         self.detail_text.config(state=tk.NORMAL)
         self.detail_text.delete("1.0", tk.END)
 
         # 标题
         self.detail_text.insert(tk.END, f"【{idiom['name']}】\n\n", "title")
 
-        for kp in idiom["knowledge_points"]:
-            label = kp["label"]
-            content = kp["content"]
-
-            # 所有知识点统一使用 label：content 格式显示
-            self.detail_text.insert(tk.END, f"📌 {label}\n", "section")
-
-            # 如果内容有多行，逐行显示
-            content_lines = content.split('\n')
-            for cl in content_lines:
-                cl = cl.strip()
-                if not cl:
-                    continue
-                # 检查是否为子项（如 "语义侧重：xxx"）
-                sub_match = re.match(r'^([^:：]{1,20})[：:]\s*(.*)', cl)
-                if sub_match:
-                    self.detail_text.insert(tk.END, f"  • {sub_match.group(1)}：", "label")
-                    self.detail_text.insert(tk.END, f"{sub_match.group(2)}\n", "content")
-                else:
-                    self.detail_text.insert(tk.END, f"  {cl}\n", "content")
-
-            self.detail_text.insert(tk.END, "\n")
+        raw_text = idiom.get("raw_text")
+        if raw_text:
+            # 原文格式显示
+            self.detail_text.insert(tk.END, raw_text, "content")
+        else:
+            # 向后兼容旧数据
+            for kp in idiom["knowledge_points"]:
+                label = kp["label"]
+                content = kp["content"]
+                self.detail_text.insert(tk.END, f"📌 {label}\n", "section")
+                content_lines = content.split('\n')
+                for cl in content_lines:
+                    cl = cl.strip()
+                    if not cl:
+                        continue
+                    sub_match = re.match(r'^([^:：]{1,20})[：:]\s*(.*)', cl)
+                    if sub_match:
+                        self.detail_text.insert(tk.END, f"  • {sub_match.group(1)}：", "label")
+                        self.detail_text.insert(tk.END, f"{sub_match.group(2)}\n", "content")
+                    else:
+                        self.detail_text.insert(tk.END, f"  {cl}\n", "content")
+                self.detail_text.insert(tk.END, "\n")
 
     def _delete_selected_idiom(self):
         """删除选中的成语"""
@@ -616,7 +627,7 @@ class IdoimApp:
             )
             return
 
-        if not parsed["knowledge_points"]:
+        if not parsed.get("raw_text") and not parsed.get("knowledge_points"):
             messagebox.showwarning(
                 "警告",
                 f"解析到「{parsed['name']}」但没有知识点内容。\n"
@@ -1040,7 +1051,7 @@ class IdoimApp:
         self.card_frame.config(bg="#FFFFFF")
 
     def _show_back_content(self):
-        """显示背面内容（带结构化对齐，与成语库同步）"""
+        """显示背面内容"""
         if not self.current_review_list:
             return
         self.is_showing_back = True
@@ -1060,28 +1071,28 @@ class IdoimApp:
         self.card_text.insert(tk.END, f"掌握度：{stars} {self._get_mastery_label(mastery)}\n", "mastery_back")
         self.card_text.insert(tk.END, "─" * 40 + "\n\n", "divider")
 
-        # 遍历知识点，统一 label：content 格式显示
-        for kp in idiom["knowledge_points"]:
-            label = kp["label"]
-            content = kp["content"]
-
-            self.card_text.insert(tk.END, f"📌 {label}\n", "section_title")
-
-            # 如果内容有多行，逐行显示（子项用 bullet 标注）
-            content_lines = content.split('\n')
-            for cl in content_lines:
-                cl = cl.strip()
-                if not cl:
-                    continue
-                # 检查是否为子项（如 "语义侧重：xxx"）
-                sub_match = re.match(r'^([^:：]{1,20})[：:]\s*(.*)', cl)
-                if sub_match:
-                    self.card_text.insert(tk.END, f"  • {sub_match.group(1)}：", "label")
-                    self.card_text.insert(tk.END, f"{sub_match.group(2)}\n", "body")
-                else:
-                    self.card_text.insert(tk.END, f"  {cl}\n", "body")
-
-            self.card_text.insert(tk.END, "\n", "body")
+        raw_text = idiom.get("raw_text")
+        if raw_text:
+            # 原文格式显示
+            self.card_text.insert(tk.END, raw_text, "body")
+        else:
+            # 向后兼容旧数据
+            for kp in idiom["knowledge_points"]:
+                label = kp["label"]
+                content = kp["content"]
+                self.card_text.insert(tk.END, f"📌 {label}\n", "section_title")
+                content_lines = content.split('\n')
+                for cl in content_lines:
+                    cl = cl.strip()
+                    if not cl:
+                        continue
+                    sub_match = re.match(r'^([^:：]{1,20})[：:]\s*(.*)', cl)
+                    if sub_match:
+                        self.card_text.insert(tk.END, f"  • {sub_match.group(1)}：", "label")
+                        self.card_text.insert(tk.END, f"{sub_match.group(2)}\n", "body")
+                    else:
+                        self.card_text.insert(tk.END, f"  {cl}\n", "body")
+                self.card_text.insert(tk.END, "\n", "body")
 
         self.card_text.config(state=tk.DISABLED)
         self.card_frame.config(bg="#FFFDE7")

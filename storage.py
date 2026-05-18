@@ -153,9 +153,10 @@ def search_idioms(keyword: str) -> List[Dict]:
     keyword = keyword.lower()
     results = []
     for idiom in idioms:
-        if (keyword in idiom["name"].lower() or 
+        if (keyword in idiom["name"].lower() or
             keyword in idiom.get("core_meaning", "").lower() or
-            keyword in idiom.get("distinctions", "").lower()):
+            keyword in idiom.get("distinctions", "").lower() or
+            keyword in idiom.get("raw_text", "").lower()):
             results.append(idiom)
     return results
 

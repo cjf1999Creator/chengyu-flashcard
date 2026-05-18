@@ -29,9 +29,10 @@ def parse_idiom_text(text: str) -> Optional[Dict]:
     """
     result = {
         "name": "",
+        "raw_text": "",
         "knowledge_points": []
     }
-    
+
     # 提取成语名称 - 多种格式
     # 【成语: 鞭打快牛 (biān dǎ kuài niú)】
     name_match = re.search(r'【成语\s*[：:]\s*(.+?)】', text)
@@ -43,21 +44,16 @@ def parse_idiom_text(text: str) -> Optional[Dict]:
         name_match = re.search(r'【(.+?)】', text)
     if not name_match:
         return None
-    
+
     raw_name = name_match.group(1).strip()
     # 去掉拼音部分，如 "鞭打快牛 (biān dǎ kuài niú)" → "鞭打快牛"
     result["name"] = re.sub(r'\s*\(.*?\)\s*$', '', raw_name).strip()
-    
-    # 获取头部之后的内容
+
+    # 获取头部之后的内容，保留原文
     header_end = name_match.end()
     body = text[header_end:].strip()
-    
-    # 尝试检测是否为旧格式（有明确的章节标题）
-    if _is_old_format(body):
-        _parse_old_format(body, result)
-    else:
-        _parse_simple_format(body, result)
-    
+    result["raw_text"] = body
+
     return result
 
 
@@ -235,7 +231,7 @@ def parse_multiple_idioms(text: str) -> List[Dict]:
         try:
             parsed = parse_idiom_text(part)
             if parsed and parsed["name"]:
-                if parsed["knowledge_points"]:
+                if parsed.get("raw_text") or parsed.get("knowledge_points"):
                     results.append(parsed)
                 else:
                     errors.append(f"第 {i+1} 个卡片「{parsed['name']}」解析到 0 个知识点")
@@ -258,19 +254,18 @@ def get_last_parse_errors() -> List[str]:
 
 
 def format_flashcard_back(idiom: Dict) -> str:
-    """
-    将解析后的成语数据格式化为闪卡背面的文本。
-    统一使用 "标签：内容" 格式
-    """
+    """将成语数据格式化为闪卡背面的文本。"""
+    if idiom.get("raw_text"):
+        return f"【{idiom['name']}】\n\n{idiom['raw_text']}"
+
+    # 向后兼容旧数据
     lines = []
     lines.append(f"【{idiom['name']}】】")
     lines.append("")
-    
+
     for kp in idiom["knowledge_points"]:
         label = kp["label"]
         content = kp["content"]
-        
-        # 如果内容包含多行，缩进显示
         if '\n' in content:
             content_lines = content.split('\n')
             lines.append(f"{label}：{content_lines[0]}")
@@ -278,23 +273,24 @@ def format_flashcard_back(idiom: Dict) -> str:
                 lines.append(f"  {cl.strip()}")
         else:
             lines.append(f"{label}：{content}")
-    
+
     return "\n".join(lines)
 
 
 def idiom_to_editable_text(idiom: Dict) -> str:
-    """
-    将成语数据转换为可编辑的文本格式。
-    使用简洁的 "标签：内容" 格式
-    """
+    """将成语数据转换为可编辑的文本格式。"""
+    if idiom.get("raw_text"):
+        return f"【成语：{idiom['name']}】\n\n{idiom['raw_text']}"
+
+    # 向后兼容旧数据
     lines = []
     lines.append(f"【成语：{idiom['name']}】")
     lines.append("")
-    
+
     for kp in idiom["knowledge_points"]:
         label = kp["label"]
         content = kp["content"]
         lines.append(f"{label}：{content}")
         lines.append("")
-    
+
     return "\n".join(lines)
