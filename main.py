@@ -509,6 +509,7 @@ class IdoimApp:
         bottom_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
 
         self._mac_button(bottom_frame, "删除选中", self._delete_selected_idiom, color=C.RED, padx=14).pack(side=tk.LEFT)
+        self._mac_button(bottom_frame, "导出", self._show_export_menu, color=C.PURPLE, padx=14).pack(side=tk.LEFT, padx=(8, 0))
 
         self.library_count_label = tk.Label(
             bottom_frame, text="", font=self.font_small, bg=C.BG, fg=C.TEXT_SECONDARY
@@ -541,7 +542,7 @@ class IdoimApp:
 
         self.idiom_listbox = tk.Listbox(
             left_frame, font=self.font_normal,
-            selectmode=tk.SINGLE, relief=tk.FLAT, bd=0,
+            selectmode=tk.EXTENDED, relief=tk.FLAT, bd=0,
             bg=C.LIST_BG, fg=C.TEXT_PRIMARY,
             selectbackground=C.LIST_SELECT, selectforeground=C.LIST_SELECT_TEXT,
             highlightthickness=0, activestyle="none",
@@ -603,10 +604,15 @@ class IdoimApp:
         selection = self.idiom_listbox.curselection()
         if not selection:
             return
-        index = selection[0]
+        # 多选模式下显示最后一个选中项的详情
+        index = selection[-1]
         if index < len(self.all_idioms):
             self._show_idiom_detail(self.all_idioms[index])
             self.detail_text.config(state=tk.DISABLED)
+        # 更新选中计数
+        count = len(selection)
+        if count > 1:
+            self.library_count_label.config(text=f"已选 {count} 个成语")
 
     def _show_idiom_detail(self, idiom):
         self.detail_text.config(state=tk.NORMAL)
@@ -630,16 +636,18 @@ class IdoimApp:
     def _delete_selected_idiom(self):
         selection = self.idiom_listbox.curselection()
         if not selection:
-            messagebox.showwarning("提示", "请先选择一个成语！")
+            messagebox.showwarning("提示", "请先选择成语！")
             return
-        index = selection[0]
-        if index < len(self.all_idioms):
-            name = self.all_idioms[index]["name"]
-            if messagebox.askyesno("确认删除", f"确定要删除「{name}」吗？"):
+        names = [self.all_idioms[i]["name"] for i in selection if i < len(self.all_idioms)]
+        if not names:
+            return
+        msg = f"确定要删除「{names[0]}」吗？" if len(names) == 1 else f"确定要删除选中的 {len(names)} 个成语吗？"
+        if messagebox.askyesno("确认删除", msg):
+            for name in names:
                 delete_idiom(name)
-                self._refresh_library()
-                self.detail_text.delete("1.0", tk.END)
-                self._refresh_stats()
+            self._refresh_library()
+            self.detail_text.delete("1.0", tk.END)
+            self._refresh_stats()
 
     # ==================== 编辑功能 ====================
 
@@ -725,6 +733,180 @@ class IdoimApp:
             if index < len(self.all_idioms):
                 self.detail_text.config(state=tk.NORMAL)
                 self._show_idiom_detail(self.all_idioms[index])
+
+    # ==================== 导出功能 ====================
+
+    def _show_export_menu(self):
+        selection = self.idiom_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("提示", "请先选择要导出的成语！\n按住 Cmd/Ctrl 可多选。")
+            return
+        # 获取选中的成语完整数据
+        selected_idioms = []
+        for i in selection:
+            if i < len(self.all_idioms):
+                idioms_all = load_idioms()
+                for idiom in idioms_all:
+                    if idiom["name"] == self.all_idioms[i]["name"]:
+                        selected_idioms.append(idiom)
+                        break
+        self._export_idioms = selected_idioms
+        count = len(selected_idioms)
+
+        menu = tk.Menu(self.root, tearoff=0, font=self.font_normal)
+        menu.add_command(label=f"导出 {count} 个成语为 Markdown (.md)", command=lambda: self._do_export("md"))
+        menu.add_command(label=f"导出 {count} 个成语为纯文本 (.txt)", command=lambda: self._do_export("txt"))
+        menu.add_separator()
+        menu.add_command(label=f"导出 {count} 个成语为 PDF (.pdf)", command=lambda: self._do_export("pdf"))
+        menu.tk_popup(*self.root.winfo_pointerxy())
+
+    def _do_export(self, fmt):
+        ext_map = {"md": ".md", "txt": ".txt", "pdf": ".pdf"}
+        type_map = {"md": [("Markdown", "*.md")], "txt": [("文本文件", "*.txt")], "pdf": [("PDF", "*.pdf")]}
+        name_map = {"md": "成语积累", "txt": "成语积累", "pdf": "成语积累"}
+
+        filepath = filedialog.asksaveasfilename(
+            title="导出成语库",
+            defaultextension=ext_map[fmt],
+            filetypes=type_map[fmt],
+            initialfile=name_map[fmt] + ext_map[fmt],
+        )
+        if not filepath:
+            return
+
+        try:
+            if fmt == "md":
+                self._export_as_markdown(filepath)
+            elif fmt == "txt":
+                self._export_as_txt(filepath)
+            elif fmt == "pdf":
+                self._export_as_pdf(filepath)
+            messagebox.showinfo("导出成功", f"已导出到：\n{filepath}")
+        except Exception as e:
+            messagebox.showerror("导出失败", str(e))
+
+    def _get_mastery_stars(self, level):
+        return "★" * level + "☆" * (5 - level)
+
+    def _idiom_core_meaning(self, idiom):
+        """提取成语的核心释义（第一个知识点）"""
+        if idiom.get("raw_text"):
+            lines = idiom["raw_text"].strip().split('\n')
+            for line in lines:
+                stripped = line.strip()
+                if stripped and ('核心释义' in stripped or stripped.startswith('核心')):
+                    match = re.match(r'[^：:]*[：:]\s*(.*)', stripped)
+                    if match and match.group(1).strip():
+                        return self._clean_meaning(match.group(1).strip())
+            for line in lines:
+                stripped = line.strip()
+                if stripped:
+                    match = re.match(r'[^：:]*[：:]\s*(.*)', stripped)
+                    if match and match.group(1).strip():
+                        return self._clean_meaning(match.group(1).strip())
+            return self._clean_meaning(idiom["raw_text"].strip())
+        kps = idiom.get("knowledge_points", [])
+        if kps:
+            return self._clean_meaning(kps[0].get("content", ""))
+        return ""
+
+    @staticmethod
+    def _clean_meaning(text):
+        """清理释义文本中的序号残留和空白"""
+        text = text.strip()
+        # 去掉末尾的孤立序号如 "2." "3." 等
+        text = re.sub(r'\n+\d+\.\s*$', '', text)
+        text = re.sub(r'\s*\d+\.\s*$', '', text)
+        return text.strip()
+
+    def _export_as_markdown(self, filepath):
+        idioms = self._export_idioms
+        lines = ["# 成语积累\n"]
+        lines.append(f"> 导出 {len(idioms)} 个成语，导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+
+        for idiom in idioms:
+            lines.append(f"- **{idiom['name']}**：")
+            meaning = self._idiom_core_meaning(idiom)
+            if meaning:
+                # 多行内容缩进
+                meaning_lines = meaning.split('\n')
+                lines.append(meaning_lines[0])
+                for ml in meaning_lines[1:]:
+                    if ml.strip():
+                        lines.append("  " + ml.strip())
+            lines.append("")
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+    def _export_as_txt(self, filepath):
+        idioms = self._export_idioms
+        parts = []
+        for idiom in idioms:
+            meaning = self._idiom_core_meaning(idiom)
+            parts.append(f"【{idiom['name']}】{meaning}")
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write("\n".join(parts))
+
+    def _export_as_pdf(self, filepath):
+        from fpdf import FPDF
+
+        font_candidates = [
+            "/System/Library/Fonts/STHeiti Medium.ttc",
+            "/System/Library/Fonts/Supplemental/Songti.ttc",
+        ]
+        font_path = None
+        for fp in font_candidates:
+            if os.path.exists(fp):
+                font_path = fp
+                break
+        if not font_path:
+            raise RuntimeError("未找到中文字体，无法导出 PDF")
+
+        class IdiomPDF(FPDF):
+            def footer(self):
+                self.set_y(-15)
+                self.set_font("chinese", "", 8)
+                self.set_text_color(166, 166, 178)
+                self.cell(0, 10, f"成语积累  —  第 {self.page_no()} 页", align="C")
+
+        pdf = IdiomPDF()
+        pdf.set_auto_page_break(auto=True, margin=20)
+        pdf.add_font("chinese", "", font_path)
+        pdf.add_font("chinese", "B", font_path)
+
+        idioms = self._export_idioms
+
+        # 封面
+        pdf.add_page()
+        pdf.set_font("chinese", "B", 24)
+        pdf.set_text_color(29, 29, 31)
+        pdf.ln(60)
+        pdf.cell(0, 15, "成语积累", align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("chinese", "", 12)
+        pdf.set_text_color(134, 134, 139)
+        pdf.cell(0, 10, f"导出 {len(idioms)} 个成语", align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 10, f"导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}", align="C", new_x="LMARGIN", new_y="NEXT")
+
+        # 成语内容 - 仅核心释义
+        for idiom in idioms:
+            pdf.add_page()
+            pdf.set_font("chinese", "B", 14)
+            pdf.set_text_color(0, 122, 255)
+            pdf.cell(0, 10, idiom["name"], new_x="LMARGIN", new_y="NEXT")
+
+            pdf.set_draw_color(210, 210, 215)
+            pdf.line(10, pdf.get_y() + 1, 200, pdf.get_y() + 1)
+            pdf.ln(4)
+
+            meaning = self._idiom_core_meaning(idiom)
+            if meaning:
+                pdf.set_font("chinese", "", 10)
+                pdf.set_text_color(29, 29, 31)
+                pdf.multi_cell(0, 6, meaning)
+
+        pdf.output(filepath)
 
     # ==================== 闪卡复习 ====================
 
@@ -1096,9 +1278,6 @@ class IdoimApp:
         self.card_text.tag_configure("label", font=(self._cn_font, max(9, self._card_back_size), "bold"), foreground=C.TEXT_SECONDARY, justify=tk.LEFT)
         self.card_text.tag_configure("body", font=(self._cn_font, self._card_back_size), foreground=C.TEXT_PRIMARY, justify=tk.LEFT)
         self.card_text.tag_configure("divider", font=(self._ui_font, 8), foreground=C.BORDER_LIGHT, justify=tk.CENTER)
-
-    def _get_mastery_stars(self, level):
-        return "★" * level + "☆" * (5 - level)
 
     def _get_mastery_label(self, level):
         labels = ["未复习", "初识", "了解", "熟悉", "掌握", "精通"]
