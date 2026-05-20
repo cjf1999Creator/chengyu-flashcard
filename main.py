@@ -1059,16 +1059,11 @@ class IdoimApp:
         action_frame = tk.Frame(right_area, bg=C.BG)
         action_frame.pack(fill=tk.X, pady=(0, 10))
 
-        self._mac_button(action_frame, "← 上一个 (J)", self._prev_card, color=C.TEXT_TERTIARY, fg="white", padx=16, pady=7).pack(side=tk.LEFT)
-        self._mac_button(action_frame, "翻转 (Space)", self._flip_card, color=C.ACCENT, padx=16, pady=7).pack(side=tk.LEFT, padx=6)
-        self._mac_button(action_frame, "下一个 (K) →", self._next_card, color=C.TEXT_TERTIARY, fg="white", padx=16, pady=7).pack(side=tk.LEFT)
-
-        master_frame = tk.Frame(action_frame, bg=C.BG)
-        master_frame.pack(side=tk.RIGHT)
-
-        self._mac_button(master_frame, "不认识 (D)", lambda: self._mark_card(False), color=C.RED, padx=12, pady=7).pack(side=tk.RIGHT)
-        self._mac_button(master_frame, "认识 (A)", lambda: self._mark_card(True), color=C.GREEN, padx=12, pady=7).pack(side=tk.RIGHT, padx=6)
-        self._mac_button(master_frame, "已掌握 (S)", self._mark_mastered, color=C.ORANGE, padx=12, pady=7).pack(side=tk.RIGHT, padx=6)
+        self._mac_button(action_frame, "← 上一个", self._prev_card, color=C.TEXT_TERTIARY, fg="white", padx=20, pady=10).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
+        self._mac_button(action_frame, "认识", lambda: self._mark_card(True), color=C.GREEN, padx=20, pady=10).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
+        self._mac_button(action_frame, "不认识", lambda: self._mark_card(False), color=C.RED, padx=20, pady=10).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
+        self._mac_button(action_frame, "掌握", self._mark_mastered, color=C.ORANGE, padx=20, pady=10).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
+        self._mac_button(action_frame, "下一个 →", self._next_card, color=C.ACCENT, padx=20, pady=10).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
 
     # ==================== 日历组件 ====================
 
