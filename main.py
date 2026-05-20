@@ -1041,6 +1041,7 @@ class IdoimApp:
         )
         self.card_text.pack(fill=tk.BOTH, expand=True)
         self.card_text.config(state=tk.DISABLED)
+        self.card_text.bind("<Button-1>", lambda e: self._flip_card())
 
         self.card_text.tag_configure("center", justify=tk.CENTER)
         self.card_text.tag_configure("name", font=(self._cn_font, self._card_front_size, "bold"), foreground=C.TEXT_PRIMARY, justify=tk.CENTER)
