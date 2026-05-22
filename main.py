@@ -140,7 +140,7 @@ class IdoimApp:
         btn = tk.Button(
             parent, text=text, command=command,
             font=font, bg=color, fg=fg,
-            activebackground=self._darken(color, 0.1), activeforeground=fg,
+            activebackground=color, activeforeground=fg,
             relief=tk.FLAT, bd=0, padx=padx, pady=pady,
             cursor="hand2", highlightthickness=0,
             **kw
@@ -162,12 +162,10 @@ class IdoimApp:
             padx=padx, pady=pady,
             cursor="hand2"
         )
-        hover = self._darken(color, 0.12)
-        press = self._darken(color, 0.22)
-        btn.bind("<Enter>", lambda e: btn.configure(bg=hover))
+        btn.bind("<Enter>", lambda e: btn.configure(bg=color))
         btn.bind("<Leave>", lambda e: btn.configure(bg=color))
-        btn.bind("<ButtonPress-1>", lambda e: btn.configure(bg=press))
-        btn.bind("<ButtonRelease-1>", lambda e: (btn.configure(bg=hover), command()))
+        btn.bind("<ButtonPress-1>", lambda e: btn.configure(bg=color))
+        btn.bind("<ButtonRelease-1>", lambda e: (btn.configure(bg=color), command()))
         return btn
 
     # ==================== 快捷键 ====================
@@ -236,10 +234,10 @@ class IdoimApp:
         btn_frame = tk.Frame(self.import_frame, bg=C.BG)
         btn_frame.pack(fill=tk.X, padx=20, pady=(15, 10))
 
-        self._mac_button(btn_frame, "从文件导入", self._import_from_file, color=C.PURPLE, padx=20, pady=8).pack(side=tk.LEFT, padx=(0, 8))
-        self._mac_button(btn_frame, "预览解析结果", self._preview_import, color=C.ACCENT, padx=20, pady=8).pack(side=tk.LEFT, padx=(0, 8))
-        self._mac_button(btn_frame, "清空", lambda: self.import_text.delete("1.0", tk.END), color=C.TEXT_TERTIARY, padx=14, pady=8).pack(side=tk.LEFT, padx=(0, 8))
-        self._mac_button(btn_frame, "确认导入", self._do_import, color=C.GREEN, font=self.font_button_big, padx=24, pady=8).pack(side=tk.RIGHT)
+        self._colored_button(btn_frame, "从文件导入", self._import_from_file, color="#555555", fg="white", padx=20, pady=8).pack(side=tk.LEFT, padx=(0, 8))
+        self._colored_button(btn_frame, "预览解析结果", self._preview_import, color="#555555", fg="white", padx=20, pady=8).pack(side=tk.LEFT, padx=(0, 8))
+        self._colored_button(btn_frame, "清空", lambda: self.import_text.delete("1.0", tk.END), color="#555555", fg="white", padx=14, pady=8).pack(side=tk.LEFT, padx=(0, 8))
+        self._colored_button(btn_frame, "确认导入", self._do_import, color="#555555", fg="white", font=self.font_button_big, padx=24, pady=8).pack(side=tk.RIGHT)
 
         # PanedWindow
         import_paned = ttk.PanedWindow(self.import_frame, orient=tk.VERTICAL)
@@ -522,15 +520,15 @@ class IdoimApp:
         self.search_entry.pack(side=tk.LEFT, padx=6, pady=6)
         self.search_entry.bind("<Return>", lambda e: self._search_idioms())
 
-        self._mac_button(search_frame, "搜索", self._search_idioms, color=C.ACCENT, padx=14).pack(side=tk.LEFT, padx=(8, 0))
-        self._mac_button(search_frame, "显示全部", self._refresh_library, color=C.TEXT_TERTIARY, padx=14).pack(side=tk.LEFT, padx=(6, 0))
+        self._colored_button(search_frame, "搜索", self._search_idioms, color="#555555", fg="white", padx=14).pack(side=tk.LEFT, padx=(8, 0))
+        self._colored_button(search_frame, "显示全部", self._refresh_library, color="#555555", fg="white", padx=14).pack(side=tk.LEFT, padx=(6, 0))
 
         # 底部按钮
         bottom_frame = tk.Frame(self.library_frame, bg=C.BG)
         bottom_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
 
-        self._mac_button(bottom_frame, "删除选中", self._delete_selected_idiom, color=C.RED, padx=14).pack(side=tk.LEFT)
-        self._mac_button(bottom_frame, "导出", self._show_export_menu, color=C.PURPLE, padx=14).pack(side=tk.LEFT, padx=(8, 0))
+        self._colored_button(bottom_frame, "删除选中", self._delete_selected_idiom, color="#555555", fg="white", padx=14).pack(side=tk.LEFT)
+        self._colored_button(bottom_frame, "导出", self._show_export_menu, color="#555555", fg="white", padx=14).pack(side=tk.LEFT, padx=(8, 0))
 
         self.library_count_label = tk.Label(
             bottom_frame, text="", font=self.font_small, bg=C.BG, fg=C.TEXT_SECONDARY
@@ -544,13 +542,13 @@ class IdoimApp:
         self.edit_status_label = tk.Label(detail_btn_frame, text="", font=self.font_small, fg=C.ACCENT, bg=C.BG)
         self.edit_status_label.pack(side=tk.RIGHT, padx=(8, 0))
 
-        self.btn_cancel_edit = self._mac_button(detail_btn_frame, "取消", self._cancel_edit, color=C.TEXT_TERTIARY, padx=10)
+        self.btn_cancel_edit = self._colored_button(detail_btn_frame, "取消", self._cancel_edit, color="#555555", fg="white", padx=10)
         self.btn_cancel_edit.pack(side=tk.RIGHT, padx=(4, 0))
 
-        self.btn_save = self._mac_button(detail_btn_frame, "保存", self._save_edit, color=C.GREEN, padx=10)
+        self.btn_save = self._colored_button(detail_btn_frame, "保存", self._save_edit, color="#555555", fg="white", padx=10)
         self.btn_save.pack(side=tk.RIGHT, padx=(4, 0))
 
-        self.btn_edit = self._mac_button(detail_btn_frame, "编辑", self._enter_edit_mode, color=C.ORANGE, padx=10)
+        self.btn_edit = self._colored_button(detail_btn_frame, "编辑", self._enter_edit_mode, color="#555555", fg="white", padx=10)
         self.btn_edit.pack(side=tk.RIGHT, padx=(4, 0))
 
         # PanedWindow
@@ -954,7 +952,7 @@ class IdoimApp:
                 command=self._on_review_mode_change
             ).pack(side=tk.LEFT, padx=4)
 
-        self._mac_button(control_frame, "开始复习", self._start_review, color=C.ACCENT, font=self.font_button_big, padx=20, pady=6).pack(side=tk.RIGHT)
+        self._colored_button(control_frame, "开始复习", self._start_review, color="#555555", fg="white", font=self.font_button_big, padx=20, pady=6).pack(side=tk.RIGHT)
 
         # 字号调节
         font_frame = tk.Frame(control_frame, bg=C.BG)
@@ -962,7 +960,7 @@ class IdoimApp:
 
         tk.Label(font_frame, text="字号", font=self.font_small, bg=C.BG, fg=C.TEXT_SECONDARY).pack(side=tk.LEFT)
 
-        self._mac_button(font_frame, "A-", self._font_size_down, color=C.TEXT_TERTIARY, padx=8, pady=2).pack(side=tk.LEFT, padx=2)
+        self._colored_button(font_frame, "A-", self._font_size_down, color="#555555", fg="white", padx=8, pady=2).pack(side=tk.LEFT, padx=2)
 
         self.font_size_var = tk.IntVar(value=self._card_back_size)
         self.font_size_scale = tk.Scale(
@@ -974,7 +972,7 @@ class IdoimApp:
         )
         self.font_size_scale.pack(side=tk.LEFT, padx=2)
 
-        self._mac_button(font_frame, "A+", self._font_size_up, color=C.TEXT_TERTIARY, padx=8, pady=2).pack(side=tk.LEFT, padx=2)
+        self._colored_button(font_frame, "A+", self._font_size_up, color="#555555", fg="white", padx=8, pady=2).pack(side=tk.LEFT, padx=2)
 
         # 主内容区：左侧日历 + 右侧闪卡
         main_paned = ttk.PanedWindow(self.review_frame, orient=tk.HORIZONTAL)
@@ -990,8 +988,8 @@ class IdoimApp:
         cal_header = tk.Frame(self.calendar_frame, bg=C.SURFACE)
         cal_header.pack(fill=tk.X, padx=12, pady=(12, 4))
 
-        self._mac_button(cal_header, "<", self._cal_prev_month, color=C.SURFACE, fg=C.TEXT_PRIMARY, font=(self._ui_font, 14, "bold"), padx=6, pady=0).pack(side=tk.LEFT)
-        self._mac_button(cal_header, ">", self._cal_next_month, color=C.SURFACE, fg=C.TEXT_PRIMARY, font=(self._ui_font, 14, "bold"), padx=6, pady=0).pack(side=tk.RIGHT)
+        self._colored_button(cal_header, "<", self._cal_prev_month, color="#555555", fg="white", font=(self._ui_font, 14, "bold"), padx=6, pady=0).pack(side=tk.LEFT)
+        self._colored_button(cal_header, ">", self._cal_next_month, color="#555555", fg="white", font=(self._ui_font, 14, "bold"), padx=6, pady=0).pack(side=tk.RIGHT)
 
         self.cal_month_label = tk.Label(cal_header, text="", font=(self._ui_font, 13, "bold"), bg=C.SURFACE, fg=C.TEXT_PRIMARY)
         self.cal_month_label.pack(side=tk.LEFT, expand=True)
@@ -1864,7 +1862,7 @@ class IdoimApp:
         btn_row = tk.Frame(self.stats_frame, bg=C.BG)
         btn_row.pack(fill=tk.X, padx=20, pady=(15, 0))
 
-        self._mac_button(btn_row, "刷新统计", self._refresh_stats, color=C.ACCENT, padx=16, pady=6).pack(side=tk.LEFT)
+        self._colored_button(btn_row, "刷新统计", self._refresh_stats, color="#555555", fg="white", padx=16, pady=6).pack(side=tk.LEFT)
 
         self.stats_display = scrolledtext.ScrolledText(
             self.stats_frame, font=self.font_normal, wrap=tk.WORD,
