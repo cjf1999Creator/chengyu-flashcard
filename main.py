@@ -8,9 +8,11 @@ from tkinter import ttk, messagebox, scrolledtext, filedialog
 import random
 import re
 import os
+import time
 import sys
 import calendar
 from datetime import datetime, date
+
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -116,6 +118,7 @@ class IdoimApp:
         self.current_index = 0
         self.is_showing_back = False
         self._animating = False
+        self._resize_timer = None
 
         # 编辑状态
         self.is_editing = False
@@ -148,6 +151,24 @@ class IdoimApp:
     def _darken(hex_color, amount):
         r, g, b = hex_to_rgb(hex_color)
         return rgb_to_hex(max(0, r - int(255 * amount)), max(0, g - int(255 * amount)), max(0, b - int(255 * amount)))
+
+    def _colored_button(self, parent, text, command, color, fg="white", font=None, padx=16, pady=6):
+        """macOS 上 tk.Button 忽略 bg，用 Label 模拟彩色按钮"""
+        font = font or self.font_button
+        btn = tk.Label(
+            parent, text=text, font=font,
+            bg=color, fg=fg,
+            activebackground=color, activeforeground=fg,
+            padx=padx, pady=pady,
+            cursor="hand2"
+        )
+        hover = self._darken(color, 0.12)
+        press = self._darken(color, 0.22)
+        btn.bind("<Enter>", lambda e: btn.configure(bg=hover))
+        btn.bind("<Leave>", lambda e: btn.configure(bg=color))
+        btn.bind("<ButtonPress-1>", lambda e: btn.configure(bg=press))
+        btn.bind("<ButtonRelease-1>", lambda e: (btn.configure(bg=hover), command()))
+        return btn
 
     # ==================== 快捷键 ====================
 
@@ -189,23 +210,23 @@ class IdoimApp:
         tk.Frame(self.root, bg=C.TOOLBAR_BORDER, height=1).pack(fill=tk.X)
 
         # 标签页
-        notebook = ttk.Notebook(self.root)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
 
-        self.import_frame = tk.Frame(notebook, bg=C.BG)
-        notebook.add(self.import_frame, text="  导入  ")
+        self.import_frame = tk.Frame(self.notebook, bg=C.BG)
+        self.notebook.add(self.import_frame, text="  导入  ")
         self._build_import_tab()
 
-        self.library_frame = tk.Frame(notebook, bg=C.BG)
-        notebook.add(self.library_frame, text="  成语库  ")
+        self.library_frame = tk.Frame(self.notebook, bg=C.BG)
+        self.notebook.add(self.library_frame, text="  成语库  ")
         self._build_library_tab()
 
-        self.review_frame = tk.Frame(notebook, bg=C.BG)
-        notebook.add(self.review_frame, text="  闪卡复习  ")
+        self.review_frame = tk.Frame(self.notebook, bg=C.BG)
+        self.notebook.add(self.review_frame, text="  闪卡复习  ")
         self._build_review_tab()
 
-        self.stats_frame = tk.Frame(notebook, bg=C.BG)
-        notebook.add(self.stats_frame, text="  统计  ")
+        self.stats_frame = tk.Frame(self.notebook, bg=C.BG)
+        self.notebook.add(self.stats_frame, text="  统计  ")
         self._build_stats_tab()
 
     # ==================== 导入成语 ====================
@@ -571,6 +592,10 @@ class IdoimApp:
         self.detail_text.tag_configure("content", foreground=C.TEXT_PRIMARY, font=(self._cn_font, 11))
         self.detail_text.tag_configure("dim", foreground=C.TEXT_TERTIARY, font=(self._cn_font, 10))
 
+        # 详情页滑动切换状态
+        self._lib_swipe_start_x = None
+        self._lib_swipe_start_y = None
+
         self._enter_view_mode()
         self._refresh_library()
 
@@ -580,7 +605,7 @@ class IdoimApp:
         self.all_idioms = idioms
         for idiom in idioms:
             mastery = idiom.get("review_stats", {}).get("mastery_level", 0)
-            stars = "★" * mastery + "☆" * (5 - mastery)
+            stars = self._get_mastery_stars(mastery)
             self.idiom_listbox.insert(tk.END, f"  {idiom['name']}  {stars}")
         self.library_count_label.config(text=f"共 {len(idioms)} 个成语")
 
@@ -594,7 +619,7 @@ class IdoimApp:
         self.all_idioms = results
         for idiom in results:
             mastery = idiom.get("review_stats", {}).get("mastery_level", 0)
-            stars = "★" * mastery + "☆" * (5 - mastery)
+            stars = self._get_mastery_stars(mastery)
             self.idiom_listbox.insert(tk.END, f"  {idiom['name']}  {stars}")
         self.library_count_label.config(text=f"找到 {len(results)} 个成语")
 
@@ -997,12 +1022,16 @@ class IdoimApp:
 
         self._render_calendar()
 
-        # 右侧：闪卡区域
-        right_area = tk.Frame(main_paned, bg=C.BG)
-        main_paned.add(right_area, weight=1)
+        # 右侧：闪卡区域（居中容器限制卡片宽度）
+        self.right_area = tk.Frame(main_paned, bg=C.BG)
+        main_paned.add(self.right_area, weight=1)
+
+        self._card_container = tk.Frame(self.right_area, bg=C.BG)
+        self._card_container.pack(anchor=tk.CENTER, expand=True, fill=tk.BOTH)
+        self._card_container.bind("<Configure>", self._on_container_resize)
 
         # 进度条
-        progress_frame = tk.Frame(right_area, bg=C.BG)
+        progress_frame = tk.Frame(self._card_container, bg=C.BG)
         progress_frame.pack(fill=tk.X, pady=(0, 4))
 
         self.progress_label = tk.Label(
@@ -1017,20 +1046,25 @@ class IdoimApp:
         self.progress_bar.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(10, 0))
 
         # 快捷键提示
-        shortcut_bar = tk.Frame(right_area, bg=C.BG)
+        shortcut_bar = tk.Frame(self._card_container, bg=C.BG)
         shortcut_bar.pack(fill=tk.X, pady=(0, 2))
         tk.Label(
             shortcut_bar,
-            text="Space = 翻转    K/→ = 下一个    J/← = 上一个    A = 认识    D = 不认识    S = 已掌握",
+            text="Space = 翻转    ←→滑动/K/J = 切换    A = 认识    D = 不认识    S = 已掌握",
             font=(self._ui_font, 9), fg=C.TEXT_TERTIARY, bg=C.BG
         ).pack(anchor=tk.W)
 
-        # 闪卡区域
-        self.card_frame = tk.Frame(
-            right_area, bg=C.CARD_FRONT,
-            highlightbackground=C.BORDER, highlightthickness=1
-        )
-        self.card_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
+        # 底部操作按钮（先打包，确保始终可见）
+        action_frame = tk.Frame(self._card_container, bg=C.BG)
+        action_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(4, 10))
+
+        self._colored_button(action_frame, "不认识", lambda: self._mark_card(False), color="#DC2626", padx=20, pady=10).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
+        self._colored_button(action_frame, "认识", lambda: self._mark_card(True), color="#16A34A", padx=20, pady=10).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
+        self._colored_button(action_frame, "掌握", self._mark_mastered, color="#EA580C", padx=20, pady=10).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
+
+        # 闪卡区域（圆角卡片 + 阴影）
+        self.card_frame = tk.Canvas(self._card_container, bg=C.BG, highlightthickness=0)
+        self.card_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 6))
 
         self.card_text = tk.Text(
             self.card_frame, font=self.font_card_front,
@@ -1039,31 +1073,248 @@ class IdoimApp:
             cursor="arrow", spacing1=2, spacing3=2,
             highlightthickness=0
         )
-        self.card_text.pack(fill=tk.BOTH, expand=True)
         self.card_text.config(state=tk.DISABLED)
         self.card_text.bind("<Double-Button-1>", lambda e: self._flip_card())
+        self.card_text.bind("<B1-Motion>", lambda e: "break")
+        self.card_text.bind("<Button-2>", lambda e: "break")
+        self.card_text.bind("<B2-Motion>", lambda e: "break")
+        self.card_text.bind("<Button-3>", lambda e: "break")
+        self.card_text.bind("<B3-Motion>", lambda e: "break")
+
+        self._card_color = C.CARD_FRONT
+        self._card_rect_id = None
+        self._card_window_id = None
+        self.card_frame.bind("<Configure>", lambda e: self._draw_card_bg())
+
+        # 滑动切换卡片
+        self._swipe_cooldown = 0
+        self._swipe_start_x = None
+        self._swipe_start_y = None
+        self._swipe_start_time = None
+        self._scroll_accum = 0
+        self._scroll_timer = None
+        self._bind_swipe_events()
 
         self.card_text.tag_configure("center", justify=tk.CENTER)
-        self.card_text.tag_configure("name", font=(self._cn_font, self._card_front_size, "bold"), foreground=C.TEXT_PRIMARY, justify=tk.CENTER)
-        self.card_text.tag_configure("hint", font=(self._ui_font, 12), foreground=C.TEXT_TERTIARY, justify=tk.CENTER)
-        self.card_text.tag_configure("section_title", font=(self._cn_font, max(10, self._card_back_size + 2), "bold"), foreground=C.TEXT_PRIMARY)
-        self.card_text.tag_configure("label", font=(self._cn_font, max(9, self._card_back_size - 1), "bold"), foreground=C.TEXT_SECONDARY)
-        self.card_text.tag_configure("body", font=(self._cn_font, self._card_back_size), foreground=C.TEXT_PRIMARY)
-        self.card_text.tag_configure("divider", font=(self._ui_font, 8), foreground=C.BORDER_LIGHT)
-        self.card_text.tag_configure("mastery", font=(self._ui_font, 14), foreground=C.ORANGE, justify=tk.CENTER)
-        self.card_text.tag_configure("mastery_back", font=(self._cn_font, max(9, self._card_back_size)), foreground=C.ORANGE)
 
         self._show_card_placeholder()
 
-        # 底部操作按钮
-        action_frame = tk.Frame(right_area, bg=C.BG)
-        action_frame.pack(fill=tk.X, pady=(0, 10))
+    def _bind_swipe_events(self):
+        """绑定滑动事件（触控板滚动 + 鼠标拖拽滑动）"""
+        self.root.bind_all("<MouseWheel>", self._on_card_scroll)
+        self.root.bind_all("<Button-4>", self._on_card_scroll)
+        self.root.bind_all("<Button-5>", self._on_card_scroll)
+        for widget in (self.card_frame, self.card_text):
+            widget.bind("<ButtonPress-1>", self._on_swipe_press)
+            widget.bind("<ButtonRelease-1>", self._on_swipe_release)
+        self.detail_text.bind("<ButtonPress-1>", self._on_lib_swipe_press)
+        self.detail_text.bind("<ButtonRelease-1>", self._on_lib_swipe_release)
 
-        self._mac_button(action_frame, "← 上一个", self._prev_card, color=C.TEXT_TERTIARY, fg="white", padx=20, pady=10).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
-        self._mac_button(action_frame, "认识", lambda: self._mark_card(True), color=C.GREEN, padx=20, pady=10).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
-        self._mac_button(action_frame, "不认识", lambda: self._mark_card(False), color=C.RED, padx=20, pady=10).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
-        self._mac_button(action_frame, "掌握", self._mark_mastered, color=C.ORANGE, padx=20, pady=10).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
-        self._mac_button(action_frame, "下一个 →", self._next_card, color=C.ACCENT, padx=20, pady=10).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
+    def _draw_card_bg(self):
+        """绘制卡片圆角背景和阴影"""
+        if getattr(self, '_drawing_card_bg', False):
+            return
+        self._drawing_card_bg = True
+        try:
+            self._draw_card_bg_impl()
+        finally:
+            self._drawing_card_bg = False
+
+    def _card_rect(self):
+        """返回卡片在 canvas 中的位置 (x1, y1, x2, y2, card_w, card_h)"""
+        w = self.card_frame.winfo_width()
+        h = self.card_frame.winfo_height()
+        card_w = int(w * 8 / 10)
+        card_h = int(h * 4 / 5)
+        margin = w - card_w
+        x1 = margin // 2
+        y1 = (h - card_h) // 2
+        return x1, y1, x1 + card_w, y1 + card_h, card_w, card_h
+
+    def _draw_card_bg_impl(self):
+        c = self.card_frame
+        c.delete("card_bg")
+        w = c.winfo_width()
+        h = c.winfo_height()
+        if w < 20 or h < 20:
+            return
+        x1, y1, x2, y2, card_w, card_h = self._card_rect()
+        if card_w < 60 or card_h < 60:
+            return
+        r = 12
+        so = 4
+        # 阴影
+        self._rounded_polygon(c, x1 + so, y1 + so, x2 + so, y2 + so, r,
+                              fill="#BCBCBC", outline="", tags="card_bg")
+        # 卡片
+        self._card_rect_id = self._rounded_polygon(
+            c, x1, y1, x2, y2, r,
+            fill=self._card_color, outline="", tags="card_bg")
+        # 放置 card_text
+        ip_x = x1 + r
+        ip_y = y1 + r
+        tw = card_w - 2 * r
+        th = card_h - 2 * r
+        if self._card_window_id is None:
+            self._card_window_id = c.create_window(
+                ip_x, ip_y, window=self.card_text,
+                width=tw, height=th, anchor="nw")
+        elif not self._animating:
+            c.itemconfig(self._card_window_id, state="normal")
+            c.coords(self._card_window_id, ip_x, ip_y)
+            c.itemconfig(self._card_window_id, width=tw, height=th)
+
+    def _rounded_polygon(self, canvas, x1, y1, x2, y2, r, **kwargs):
+        points = [
+            x1 + r, y1, x2 - r, y1,
+            x2, y1, x2, y1 + r,
+            x2, y2 - r, x2, y2,
+            x2 - r, y2, x1 + r, y2,
+            x1, y2, x1, y2 - r,
+            x1, y1 + r, x1, y1,
+        ]
+        return canvas.create_polygon(points, smooth=True, **kwargs)
+
+    def _set_card_color(self, color):
+        self._card_color = color
+        self.card_text.config(bg=color)
+        if self._card_rect_id:
+            self.card_frame.itemconfig(self._card_rect_id, fill=color)
+
+    def _on_swipe_press(self, event):
+        """记录闪卡滑动起始位置（屏幕坐标）"""
+        self._swipe_start_x = event.x_root
+        self._swipe_start_y = event.y_root
+        self._swipe_start_time = time.time()
+
+    def _on_swipe_release(self, event):
+        """闪卡滑动释放，切换卡片"""
+        if self._swipe_start_x is None:
+            return
+        if not self.current_review_list or self._animating:
+            self._swipe_start_x = None
+            return
+
+        dx = event.x_root - self._swipe_start_x
+        dy = event.y_root - self._swipe_start_y
+        elapsed = time.time() - self._swipe_start_time if self._swipe_start_time else 1.0
+        self._swipe_start_x = None
+        self._swipe_start_y = None
+        self._swipe_start_time = None
+
+        if abs(dx) < 20 or abs(dx) <= abs(dy):
+            return
+
+        now = time.time()
+        if now - self._swipe_cooldown < 0.02:
+            return
+        self._swipe_cooldown = now
+
+        if dx > 0:
+            self.root.after(0, self._prev_card)
+        else:
+            self.root.after(0, self._next_card)
+
+    def _on_lib_swipe_press(self, event):
+        """记录成语库详情页滑动起始位置"""
+        self._lib_swipe_start_x = event.x
+        self._lib_swipe_start_y = event.y
+
+    def _on_lib_swipe_release(self, event):
+        """成语库详情页滑动释放，切换成语"""
+        if self._lib_swipe_start_x is None:
+            return
+        if self.is_editing:
+            self._lib_swipe_start_x = None
+            return
+
+        dx = event.x - self._lib_swipe_start_x
+        dy = event.y - self._lib_swipe_start_y
+        self._lib_swipe_start_x = None
+        self._lib_swipe_start_y = None
+
+        min_distance = 20
+        if abs(dx) < min_distance or abs(dx) <= abs(dy):
+            return
+
+        now = time.time()
+        if now - self._swipe_cooldown < 0.02:
+            return
+        self._swipe_cooldown = now
+
+        selection = self.idiom_listbox.curselection()
+        if not selection:
+            return
+        current_idx = selection[-1]
+
+        if dx > 0 and current_idx > 0:
+            new_idx = current_idx - 1
+        elif dx < 0 and current_idx < len(self.all_idioms) - 1:
+            new_idx = current_idx + 1
+        else:
+            return
+
+        self.idiom_listbox.selection_clear(0, tk.END)
+        self.idiom_listbox.selection_set(new_idx)
+        self.idiom_listbox.see(new_idx)
+        self._show_idiom_detail(self.all_idioms[new_idx])
+        self.detail_text.config(state=tk.DISABLED)
+
+    def _on_card_scroll(self, event):
+        """触控板双指水平滑动切换卡片"""
+        try:
+            if self.notebook.index("current") != 2:
+                return "break"
+        except Exception:
+            return "break"
+
+        if not self.current_review_list:
+            return "break"
+
+        # macOS 触控板双指水平滑动
+        dx = 0
+        try:
+            from AppKit import NSApp
+            ns_event = NSApp.currentEvent()
+            if ns_event and ns_event.type() == 22:
+                dx = ns_event.scrollingDeltaX()
+        except Exception:
+            pass
+
+        delta = getattr(event, 'delta', 0)
+        if event.num == 4:
+            delta = 1
+        elif event.num == 5:
+            delta = -1
+
+        if abs(dx) > 0:
+            self._scroll_accum += dx
+        elif abs(delta) > 0:
+            self._scroll_accum += delta
+        else:
+            return "break"
+
+        # 重置手势结束定时器：120ms 内无新事件则判定滑动结束
+        if self._scroll_timer is not None:
+            self.root.after_cancel(self._scroll_timer)
+        self._scroll_timer = self.root.after(10, self._flush_scroll)
+        return "break"
+
+    def _flush_scroll(self):
+        """滑动结束，根据累计水平位移切换卡片"""
+        self._scroll_timer = None
+        total = self._scroll_accum
+        self._scroll_accum = 0
+        if abs(total) < 10:
+            return
+        now = time.time()
+        if now - self._swipe_cooldown < 0.02:
+            return
+        self._swipe_cooldown = now
+        if total > 0:
+            self.root.after(0, self._prev_card)
+        else:
+            self.root.after(0, self._next_card)
 
     # ==================== 日历组件 ====================
 
@@ -1072,8 +1323,6 @@ class IdoimApp:
         if self.review_mode.get() == "bydate":
             self.calendar_frame.pack_propagate(False)
             self.calendar_frame.configure(width=260)
-        else:
-            pass
 
     def _cal_prev_month(self):
         if self._cal_month == 1:
@@ -1099,6 +1348,24 @@ class IdoimApp:
             if added:
                 day_str = added[:10]  # "YYYY-MM-DD"
                 self._cal_date_counts[day_str] = self._cal_date_counts.get(day_str, 0) + 1
+
+    def _on_container_resize(self, _event):
+        """限制卡片容器宽度和高度（防抖）"""
+        if getattr(self, '_in_do_resize', False):
+            return
+        if self._resize_timer is not None:
+            self.root.after_cancel(self._resize_timer)
+        self._resize_timer = self.root.after(50, self._do_resize)
+
+    def _do_resize(self):
+        """延迟执行尺寸调整，避免 Configure 递归"""
+        self._resize_timer = None
+        self._in_do_resize = True
+        try:
+            # canvas 始终填满容器，由 _draw_card_bg 负责内容居中
+            self.card_frame.pack_configure(fill=tk.BOTH, expand=True)
+        finally:
+            self._in_do_resize = False
 
     def _render_calendar(self):
         """渲染日历网格"""
@@ -1147,7 +1414,7 @@ class IdoimApp:
             # 有成语的日期下方显示小圆点
             if count > 0 and not is_selected:
                 dot = tk.Label(btn_frame, text=f"{count}", font=(self._ui_font, 7),
-                               bg=bg, fg=C.ACCENT if not is_today else C.ACCENT)
+                               bg=bg, fg=C.ACCENT)
                 dot.pack()
 
             btn.bind("<Button-1>", lambda e, d=day_str: self._on_cal_date_click(d))
@@ -1267,24 +1534,51 @@ class IdoimApp:
         self.is_showing_back = False
         self._show_current_card()
 
-    def _update_card_tags(self):
-        self.card_text.tag_configure("name", font=(self._cn_font, self._card_front_size, "bold"), foreground=C.TEXT_PRIMARY, justify=tk.CENTER)
-        self.card_text.tag_configure("hint", font=(self._ui_font, max(10, self._card_front_size // 3)), foreground=C.TEXT_TERTIARY, justify=tk.CENTER)
-        self.card_text.tag_configure("section_title", font=(self._cn_font, max(10, self._card_back_size + 2), "bold"), foreground=C.TEXT_PRIMARY, justify=tk.LEFT)
-        self.card_text.tag_configure("label", font=(self._cn_font, max(9, self._card_back_size), "bold"), foreground=C.TEXT_SECONDARY, justify=tk.LEFT)
-        self.card_text.tag_configure("body", font=(self._cn_font, self._card_back_size), foreground=C.TEXT_PRIMARY, justify=tk.LEFT)
-        self.card_text.tag_configure("divider", font=(self._ui_font, 8), foreground=C.BORDER_LIGHT, justify=tk.CENTER)
+    def _update_card_tags(self, tw=None):
+        """配置卡片文本标签样式，tw=None 时配置 self.card_text 和所有临时控件"""
+        tags = {
+            "name": dict(font=(self._cn_font, self._card_front_size, "bold"), foreground=C.TEXT_PRIMARY, justify=tk.CENTER),
+            "hint": dict(font=(self._ui_font, max(10, self._card_front_size // 3)), foreground=C.TEXT_TERTIARY, justify=tk.CENTER),
+            "section_title": dict(font=(self._cn_font, max(10, self._card_back_size + 2), "bold"), foreground=C.TEXT_PRIMARY, justify=tk.LEFT),
+            "label": dict(font=(self._cn_font, max(9, self._card_back_size), "bold"), foreground=C.TEXT_SECONDARY, justify=tk.LEFT),
+            "body": dict(font=(self._cn_font, self._card_back_size), foreground=C.TEXT_PRIMARY, justify=tk.LEFT),
+            "divider": dict(font=(self._ui_font, 8), foreground=C.BORDER_LIGHT, justify=tk.CENTER),
+        }
+        targets = [tw] if tw else [self.card_text]
+        if not tw:
+            for attr in ("_temp_text", "_temp_text_old"):
+                t = getattr(self, attr, None)
+                if t is not None:
+                    targets.append(t)
+        for widget in targets:
+            for tag, cfg in tags.items():
+                widget.tag_configure(tag, **cfg)
 
     def _get_mastery_label(self, level):
         labels = ["未复习", "初识", "了解", "熟悉", "掌握", "精通"]
         return labels[level] if level < len(labels) else f"Lv.{level}"
+
+    def _render_card_front_to(self, text_widget, idiom):
+        """将卡片正面内容渲染到指定 Text 控件"""
+        mastery = idiom.get("review_stats", {}).get("mastery_level", 0)
+        text_widget.config(state=tk.NORMAL, fg=C.TEXT_PRIMARY)
+        text_widget.delete("1.0", tk.END)
+        text_widget.insert(tk.END, "\n\n\n", "name")
+        text_widget.insert(tk.END, f"{idiom['name']}\n", "name")
+        text_widget.insert(tk.END, "\n", "name")
+        text_widget.tag_configure("mastery", font=(self._ui_font, 14), foreground=C.ORANGE, justify=tk.CENTER)
+        text_widget.insert(tk.END, f"{self._get_mastery_stars(mastery)} {self._get_mastery_label(mastery)}\n", "mastery")
+        text_widget.insert(tk.END, "\n", "name")
+        text_widget.insert(tk.END, "按 Space 翻转\n", "hint")
+        text_widget.config(state=tk.DISABLED)
 
     def _show_current_card(self):
         if not self.current_review_list:
             return
         total = len(self.current_review_list)
         current = self.current_index + 1
-        idiom = self.current_review_list[self.current_index]
+        idiom = self._get_current_idiom_fresh()
+        self.current_review_list[self.current_index] = idiom
         mastery = idiom.get("review_stats", {}).get("mastery_level", 0)
 
         self.progress_label.config(text=f"{current} / {total}    {self._get_mastery_stars(mastery)} {self._get_mastery_label(mastery)}")
@@ -1292,38 +1586,71 @@ class IdoimApp:
 
         self.is_showing_back = False
         self._update_card_tags()
-
-        self.card_text.config(state=tk.NORMAL, bg=C.CARD_FRONT, fg=C.TEXT_PRIMARY)
-        self.card_text.delete("1.0", tk.END)
-        self.card_text.insert(tk.END, "\n\n\n", "name")
-        self.card_text.insert(tk.END, f"{idiom['name']}\n", "name")
-        self.card_text.insert(tk.END, "\n", "name")
-        self.card_text.tag_configure("mastery", font=(self._ui_font, 14), foreground=C.ORANGE, justify=tk.CENTER)
-        self.card_text.insert(tk.END, f"{self._get_mastery_stars(mastery)} {self._get_mastery_label(mastery)}\n", "mastery")
-        self.card_text.insert(tk.END, "\n", "name")
-        self.card_text.insert(tk.END, "按 Space 翻转\n", "hint")
-        self.card_text.config(state=tk.DISABLED)
-        self.card_frame.config(bg=C.CARD_FRONT)
+        self._render_card_front_to(self.card_text, idiom)
+        self._set_card_color(C.CARD_FRONT)
 
     def _flip_card(self):
         if not self.current_review_list or self._animating:
             return
         self._animating = True
         if self.is_showing_back:
-            self._animate_transition(C.CARD_BACK, C.CARD_FRONT, self._show_front_content)
+            self._animate_flip(C.CARD_BACK, C.CARD_FRONT, self._show_front_content)
         else:
-            self._animate_transition(C.CARD_FRONT, C.CARD_BACK, self._show_back_content)
+            self._animate_flip(C.CARD_FRONT, C.CARD_BACK, self._show_back_content)
 
-    def _animate_transition(self, from_color, to_color, final_action, steps=8, delay=25):
-        if steps <= 0:
-            final_action()
+    def _animate_flip(self, from_color, to_color, final_action, step=0, total_steps=12):
+        """收缩→切换内容→展开 的翻转动画"""
+        if step <= total_steps // 2:
+            t = step / (total_steps // 2)
+            scale_x = 1.0 - t
+            color = lerp_color(from_color, to_color, t * 0.5)
+        else:
+            t = (step - total_steps // 2) / (total_steps - total_steps // 2)
+            scale_x = t
+            color = lerp_color(
+                lerp_color(from_color, to_color, 0.5), to_color, t)
+
+        self._set_card_color(color)
+
+        c = self.card_frame
+        cw = c.winfo_width()
+        ch = c.winfo_height()
+        if cw < 20 or ch < 20:
             self._animating = False
+            final_action()
             return
-        t = 1.0 - (steps / 8.0)
-        bg = lerp_color(from_color, to_color, t)
-        self.card_text.config(bg=bg)
-        self.card_frame.config(bg=bg)
-        self.root.after(delay, lambda: self._animate_transition(from_color, to_color, final_action, steps - 1, delay))
+        x1, y1, _, _, card_w, card_h = self._card_rect()
+        r = 12
+        so = 4
+        visible_w = max(2, int(card_w * scale_x))
+        offset_x = x1 + (card_w - visible_w) // 2
+
+        c.delete("card_bg")
+        if scale_x > 0.05:
+            self._rounded_polygon(
+                c, offset_x + so, y1 + so, offset_x + visible_w - so,
+                y1 + card_h + so, r,
+                fill="#BCBCBC", outline="", tags="card_bg")
+            self._card_rect_id = self._rounded_polygon(
+                c, offset_x, y1, offset_x + visible_w,
+                y1 + card_h, r,
+                fill=self._card_color, outline="", tags="card_bg")
+
+        if step == total_steps // 2:
+            final_action()
+
+        if self._card_window_id is not None:
+            text_w = max(1, visible_w - 2 * r)
+            c.coords(self._card_window_id, offset_x + r, y1 + r)
+            c.itemconfig(self._card_window_id, width=text_w)
+
+        if step < total_steps:
+            self.root.after(
+                18, lambda: self._animate_flip(
+                    from_color, to_color, final_action, step + 1, total_steps))
+        else:
+            self._draw_card_bg()
+            self._animating = False
 
     def _get_current_idiom_fresh(self):
         if not self.current_review_list:
@@ -1333,27 +1660,7 @@ class IdoimApp:
         return fresh_idioms.get(idiom["name"], idiom)
 
     def _show_front_content(self):
-        if not self.current_review_list:
-            return
-        self.is_showing_back = False
-        idiom = self._get_current_idiom_fresh()
-        self.current_review_list[self.current_index] = idiom
-        self._update_card_tags()
-
-        mastery = idiom.get("review_stats", {}).get("mastery_level", 0)
-        stars = self._get_mastery_stars(mastery)
-
-        self.card_text.config(state=tk.NORMAL, bg=C.CARD_FRONT, fg=C.TEXT_PRIMARY)
-        self.card_text.delete("1.0", tk.END)
-        self.card_text.insert(tk.END, "\n\n\n", "name")
-        self.card_text.insert(tk.END, f"{idiom['name']}\n", "name")
-        self.card_text.insert(tk.END, "\n", "name")
-        self.card_text.tag_configure("mastery", font=(self._ui_font, 14), foreground=C.ORANGE, justify=tk.CENTER)
-        self.card_text.insert(tk.END, f"{stars} {self._get_mastery_label(mastery)}\n", "mastery")
-        self.card_text.insert(tk.END, "\n", "name")
-        self.card_text.insert(tk.END, "按 Space 翻转\n", "hint")
-        self.card_text.config(state=tk.DISABLED)
-        self.card_frame.config(bg=C.CARD_FRONT)
+        self._show_current_card()
 
     def _show_back_content(self):
         if not self.current_review_list:
@@ -1363,7 +1670,7 @@ class IdoimApp:
         self.current_review_list[self.current_index] = idiom
         self._update_card_tags()
 
-        self.card_text.config(state=tk.NORMAL, bg=C.CARD_BACK, fg=C.TEXT_PRIMARY)
+        self.card_text.config(state=tk.NORMAL, fg=C.TEXT_PRIMARY)
         self.card_text.delete("1.0", tk.END)
 
         mastery = idiom.get("review_stats", {}).get("mastery_level", 0)
@@ -1389,7 +1696,7 @@ class IdoimApp:
                 self.card_text.insert(tk.END, "\n", "body")
 
         self.card_text.config(state=tk.DISABLED)
-        self.card_frame.config(bg=C.CARD_BACK)
+        self._set_card_color(C.CARD_BACK)
 
     def _next_card(self):
         if not self.current_review_list or self._animating:
@@ -1397,16 +1704,16 @@ class IdoimApp:
         if self.current_index < len(self.current_review_list) - 1:
             self.current_index += 1
             self.is_showing_back = False
-            self._slide_animation()
+            self._slide_card("right")
         else:
             self._update_card_tags()
-            self.card_text.config(state=tk.NORMAL, bg=C.CARD_FRONT, fg=C.GREEN)
+            self.card_text.config(state=tk.NORMAL, fg=C.GREEN)
             self.card_text.delete("1.0", tk.END)
             self.card_text.insert(tk.END, "\n\n\n", "center")
             self.card_text.insert(tk.END, "复习完成！\n\n", "name")
             self.card_text.insert(tk.END, "你可以重新选择模式\n再次开始复习\n", "hint")
             self.card_text.config(state=tk.DISABLED)
-            self.card_frame.config(bg=C.CARD_FRONT)
+            self._set_card_color(C.CARD_FRONT)
 
     def _prev_card(self):
         if not self.current_review_list or self._animating:
@@ -1414,18 +1721,116 @@ class IdoimApp:
         if self.current_index > 0:
             self.current_index -= 1
             self.is_showing_back = False
-            self._slide_animation()
+            self._slide_card("left")
 
-    def _slide_animation(self, steps=6, delay=20):
-        if steps <= 0:
-            self._show_current_card()
+    def _slide_card(self, direction, step=0, total_steps=14, delay=25):
+        """卡片联动滑动：当前卡片滑出，新卡片从对侧紧跟滑入"""
+        c = self.card_frame
+        if step == 0:
+            if self._animating:
+                return
+            self._animating = True
+            w = c.winfo_width()
+            h = c.winfo_height()
+            if w < 20 or h < 20:
+                self._animating = False
+                return
+            x1, y1, _, y2, card_w, card_h = self._card_rect()
+            r = 12
+            so = 4
+            ip_x = x1 + r
+            ip_y = y1 + r
+            tw = card_w - 2 * r
+            th = card_h - 2 * r
+            self._slide_ip_x = ip_x
+            self._slide_ip_y = ip_y
+            self._slide_tw = tw
+            self._slide_th = th
+
+            # 隐藏静态卡片
+            c.itemconfig("card_bg", state="hidden")
+            c.itemconfig(self._card_window_id, state="hidden")
+
+            # 方向：左滑（看上一张）→ 整体右移；右滑（看下一张）→ 整体左移
+            if direction == "left":
+                old_color = self._card_color
+                old_idx = self.current_index + 1
+                new_offset = -card_w  # 新卡片在左侧
+                total_dx = card_w     # 整体右移
+            else:
+                old_color = self._card_color
+                old_idx = self.current_index - 1
+                new_offset = card_w   # 新卡片在右侧
+                total_dx = -card_w    # 整体左移
+
+            self._slide_total_dx = total_dx
+            self._slide_prev_dx = 0
+
+            # --- 旧卡片（当前位置） ---
+            self._rounded_polygon(
+                c, x1 + so, y1 + so, x1 + card_w + so, y2 + so, r,
+                fill="#BCBCBC", outline="", tags="slide_temp")
+            self._rounded_polygon(
+                c, x1, y1, x1 + card_w, y2, r,
+                fill=old_color, outline="", tags="slide_temp")
+            self._temp_text_old = tk.Text(
+                c, font=self.font_card_front,
+                bg=old_color, fg=C.TEXT_PRIMARY, wrap=tk.WORD,
+                relief=tk.FLAT, bd=0, padx=30, pady=20,
+                cursor="arrow", spacing1=2, spacing3=2,
+                highlightthickness=0)
+            self._update_card_tags()
+            old_idiom = self.current_review_list[old_idx]
+            self._render_card_front_to(self._temp_text_old, old_idiom)
+            c.create_window(ip_x, ip_y, window=self._temp_text_old,
+                           width=tw, height=th, anchor="nw", tags="slide_temp")
+
+            # --- 新卡片（偏移位置） ---
+            nx1 = x1 + new_offset
+            self._rounded_polygon(
+                c, nx1 + so, y1 + so, nx1 + card_w + so, y2 + so, r,
+                fill="#BCBCBC", outline="", tags="slide_temp")
+            self._rounded_polygon(
+                c, nx1, y1, nx1 + card_w, y2, r,
+                fill=C.CARD_FRONT, outline="", tags="slide_temp")
+            self._temp_text = tk.Text(
+                c, font=self.font_card_front,
+                bg=C.CARD_FRONT, fg=C.TEXT_PRIMARY, wrap=tk.WORD,
+                relief=tk.FLAT, bd=0, padx=30, pady=20,
+                cursor="arrow", spacing1=2, spacing3=2,
+                highlightthickness=0)
+            self._update_card_tags()
+            next_idiom = self.current_review_list[self.current_index]
+            self._render_card_front_to(self._temp_text, next_idiom)
+            c.create_window(nx1 + r, ip_y, window=self._temp_text,
+                           width=tw, height=th, anchor="nw", tags="slide_temp")
+
+        if step > total_steps:
+            c.delete("slide_temp")
+            self._temp_text_old.destroy()
+            self._temp_text_old = None
+            self._temp_text.destroy()
+            self._temp_text = None
             self._animating = False
+            self._show_current_card()
+            c.itemconfig("card_bg", state="normal")
+            c.itemconfig(self._card_window_id, state="normal")
+            c.coords(self._card_window_id, self._slide_ip_x, self._slide_ip_y)
+            c.itemconfig(self._card_window_id,
+                         width=self._slide_tw, height=self._slide_th)
             return
-        t = 1.0 - (steps / 6.0)
-        bg = lerp_color(C.BORDER_LIGHT, C.CARD_FRONT, t)
-        self.card_text.config(bg=bg)
-        self.card_frame.config(bg=bg)
-        self.root.after(delay, lambda: self._slide_animation(steps - 1, delay))
+
+        t = step / total_steps
+        total_dx = self._slide_total_dx
+        prev_dx = self._slide_prev_dx
+        cur_dx = int(total_dx * t)
+        step_dx = cur_dx - prev_dx
+        self._slide_prev_dx = cur_dx
+
+        # 整体移动所有临时元素（旧卡片+新卡片同步移动）
+        c.move("slide_temp", step_dx, 0)
+
+        self.root.after(delay, lambda: self._slide_card(direction, step + 1, total_steps, delay))
 
     def _mark_card(self, known: bool):
         if not self.current_review_list or self._animating:
@@ -1537,7 +1942,7 @@ class IdoimApp:
         for i, idiom in enumerate(sorted_idioms[:10]):
             name = idiom["name"]
             level = idiom.get("review_stats", {}).get("mastery_level", 0)
-            stars = "★" * level + "☆" * (5 - level)
+            stars = self._get_mastery_stars(level)
             added = idiom.get("added_at", "未知")
             self.stats_display.insert(tk.END, f"  {i+1:2d}. ", "dim")
             self.stats_display.insert(tk.END, f"{name}", "stat_label")
