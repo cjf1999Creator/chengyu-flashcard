@@ -8,8 +8,10 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+DATA_DIR = os.path.join(os.path.expanduser("~"), "成语积累", "data")
 IDIOMS_FILE = os.path.join(DATA_DIR, "idioms.json")
+
+_cache = None
 
 
 def _ensure_data_dir():
@@ -17,24 +19,35 @@ def _ensure_data_dir():
     os.makedirs(DATA_DIR, exist_ok=True)
 
 
+def _invalidate_cache():
+    global _cache
+    _cache = None
+
+
 def load_idioms() -> List[Dict]:
-    """从JSON文件加载所有成语数据"""
+    """从JSON文件加载所有成语数据（带内存缓存）"""
+    global _cache
+    if _cache is not None:
+        return _cache
     _ensure_data_dir()
     if not os.path.exists(IDIOMS_FILE):
         return []
     try:
         with open(IDIOMS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            _cache = json.load(f)
+            return _cache
     except (json.JSONDecodeError, IOError):
         return []
 
 
 def save_idioms(idioms: List[Dict]) -> bool:
-    """保存所有成语数据到JSON文件"""
+    """保存所有成语数据到JSON文件（同时更新缓存）"""
+    global _cache
     _ensure_data_dir()
     try:
         with open(IDIOMS_FILE, "w", encoding="utf-8") as f:
             json.dump(idioms, f, ensure_ascii=False, indent=2)
+        _cache = idioms
         return True
     except IOError as e:
         print(f"保存失败: {e}")

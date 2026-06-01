@@ -14,6 +14,7 @@ DATA_FILES = [
 ]
 OPTIONS = {
     'argv_emulation': False,
+    'strip': False,
     'iconfile': 'app_icon.icns',
     'packages': ['tkinter'],
     'includes': ['tkinter', 'tkinter.ttk', 'tkinter.scrolledtext', 'tkinter.filedialog',

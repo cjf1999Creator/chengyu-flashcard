@@ -118,7 +118,9 @@ class IdoimApp:
         self.current_index = 0
         self.is_showing_back = False
         self._animating = False
+        self._slide_cooldown = False
         self._resize_timer = None
+        self.cal_idiom_list_data = []
 
         # 编辑状态
         self.is_editing = False
@@ -155,17 +157,18 @@ class IdoimApp:
     def _colored_button(self, parent, text, command, color, fg="white", font=None, padx=16, pady=6):
         """macOS 上 tk.Button 忽略 bg，用 Label 模拟彩色按钮"""
         font = font or self.font_button
+        dark = self._darken(color, 0.15)
         btn = tk.Label(
             parent, text=text, font=font,
             bg=color, fg=fg,
-            activebackground=color, activeforeground=fg,
+            activebackground=dark, activeforeground=fg,
             padx=padx, pady=pady,
             cursor="hand2"
         )
-        btn.bind("<Enter>", lambda e: btn.configure(bg=color))
+        btn.bind("<Enter>", lambda e: btn.configure(bg=dark))
         btn.bind("<Leave>", lambda e: btn.configure(bg=color))
-        btn.bind("<ButtonPress-1>", lambda e: btn.configure(bg=color))
-        btn.bind("<ButtonRelease-1>", lambda e: (btn.configure(bg=color), command()))
+        btn.bind("<ButtonPress-1>", lambda e: (btn.configure(bg=self._darken(color, 0.25)), command()))
+        btn.bind("<ButtonRelease-1>", lambda e: btn.configure(bg=dark))
         return btn
 
     # ==================== 快捷键 ====================
@@ -1020,6 +1023,30 @@ class IdoimApp:
 
         self._render_calendar()
 
+        # 当日成语列表
+        sep = tk.Frame(self.calendar_frame, bg=C.BORDER_LIGHT, height=1)
+        sep.pack(fill=tk.X, padx=12, pady=(6, 0))
+        tk.Label(self.calendar_frame, text="当日成语", font=(self._ui_font, 10, "bold"),
+                 bg=C.SURFACE, fg=C.TEXT_SECONDARY).pack(fill=tk.X, padx=12, pady=(4, 2))
+
+        list_frame = tk.Frame(self.calendar_frame, bg=C.SURFACE)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
+        scrollbar = tk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.cal_idiom_listbox = tk.Listbox(
+            list_frame, font=self.font_normal,
+            selectmode=tk.SINGLE, relief=tk.FLAT, bd=0,
+            bg=C.SURFACE, fg=C.TEXT_PRIMARY,
+            selectbackground=C.LIST_SELECT, selectforeground=C.LIST_SELECT_TEXT,
+            highlightthickness=0, activestyle="none",
+            selectborderwidth=0, yscrollcommand=scrollbar.set
+        )
+        self.cal_idiom_listbox.pack(fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.cal_idiom_listbox.yview)
+        self.cal_idiom_listbox.bind("<Double-Button-1>", self._on_cal_idiom_double_click)
+
         # 右侧：闪卡区域（居中容器限制卡片宽度）
         self.right_area = tk.Frame(main_paned, bg=C.BG)
         main_paned.add(self.right_area, weight=1)
@@ -1066,7 +1093,7 @@ class IdoimApp:
 
         self.card_text = tk.Text(
             self.card_frame, font=self.font_card_front,
-            bg=C.CARD_FRONT, fg=C.TEXT_PRIMARY, wrap=tk.WORD,
+            bg=C.CARD_BACK, fg=C.TEXT_PRIMARY, wrap=tk.WORD,
             relief=tk.FLAT, bd=0, padx=30, pady=20,
             cursor="arrow", spacing1=2, spacing3=2,
             highlightthickness=0
@@ -1079,7 +1106,7 @@ class IdoimApp:
         self.card_text.bind("<Button-3>", lambda e: "break")
         self.card_text.bind("<B3-Motion>", lambda e: "break")
 
-        self._card_color = C.CARD_FRONT
+        self._card_color = C.CARD_BACK
         self._card_rect_id = None
         self._card_window_id = None
         self.card_frame.bind("<Configure>", lambda e: self._draw_card_bg())
@@ -1098,11 +1125,11 @@ class IdoimApp:
         self._show_card_placeholder()
 
     def _bind_swipe_events(self):
-        """绑定滑动事件（触控板滚动 + 鼠标拖拽滑动）"""
-        self.root.bind_all("<MouseWheel>", self._on_card_scroll)
-        self.root.bind_all("<Button-4>", self._on_card_scroll)
-        self.root.bind_all("<Button-5>", self._on_card_scroll)
+        """绑定滑动事件（仅复习卡片区域）"""
         for widget in (self.card_frame, self.card_text):
+            widget.bind("<MouseWheel>", self._on_card_scroll)
+            widget.bind("<Button-4>", self._on_card_scroll)
+            widget.bind("<Button-5>", self._on_card_scroll)
             widget.bind("<ButtonPress-1>", self._on_swipe_press)
             widget.bind("<ButtonRelease-1>", self._on_swipe_release)
         self.detail_text.bind("<ButtonPress-1>", self._on_lib_swipe_press)
@@ -1259,7 +1286,7 @@ class IdoimApp:
         self.detail_text.config(state=tk.DISABLED)
 
     def _on_card_scroll(self, event):
-        """触控板双指水平滑动切换卡片"""
+        """触控板/鼠标滚轮水平滑动切换卡片"""
         try:
             if self.notebook.index("current") != 2:
                 return "break"
@@ -1269,28 +1296,16 @@ class IdoimApp:
         if not self.current_review_list:
             return "break"
 
-        # macOS 触控板双指水平滑动
-        dx = 0
-        try:
-            from AppKit import NSApp
-            ns_event = NSApp.currentEvent()
-            if ns_event and ns_event.type() == 22:
-                dx = ns_event.scrollingDeltaX()
-        except Exception:
-            pass
-
         delta = getattr(event, 'delta', 0)
         if event.num == 4:
             delta = 1
         elif event.num == 5:
             delta = -1
 
-        if abs(dx) > 0:
-            self._scroll_accum += dx
-        elif abs(delta) > 0:
-            self._scroll_accum += delta
-        else:
+        if abs(delta) == 0:
             return "break"
+
+        self._scroll_accum += delta
 
         # 重置手势结束定时器：120ms 内无新事件则判定滑动结束
         if self._scroll_timer is not None:
@@ -1433,6 +1448,7 @@ class IdoimApp:
 
         # 更新选中日期信息
         self._update_cal_info()
+        self._update_cal_idiom_list()
 
     def _on_cal_date_click(self, day_str):
         """点击日历日期"""
@@ -1447,6 +1463,50 @@ class IdoimApp:
             self.cal_info_label.config(text=f"已选：{self._cal_selected}（{count} 个成语）")
         else:
             self.cal_info_label.config(text="选择日期以按日期复习")
+
+    def _update_cal_idiom_list(self):
+        """更新当日成语列表"""
+        if not hasattr(self, 'cal_idiom_listbox'):
+            return
+        self.cal_idiom_listbox.delete(0, tk.END)
+        self.cal_idiom_list_data = []
+        if not self._cal_selected:
+            return
+        all_idioms = load_idioms()
+        filtered = [i for i in all_idioms if i.get("added_at", "")[:10] == self._cal_selected]
+        filtered.sort(key=lambda x: x.get("added_at", ""))
+        for idiom in filtered:
+            mastery = idiom.get("review_stats", {}).get("mastery_level", 0)
+            stars = self._get_mastery_stars(mastery)
+            self.cal_idiom_listbox.insert(tk.END, f"  {idiom['name']}  {stars}")
+        self.cal_idiom_list_data = filtered
+
+    def _on_cal_idiom_double_click(self, _event):
+        """双击日历成语列表项，跳转到该成语卡片"""
+        selection = self.cal_idiom_listbox.curselection()
+        if not selection:
+            return
+        clicked_idiom = self.cal_idiom_list_data[selection[0]]
+        if not self.current_review_list or self.current_review_list != self.cal_idiom_list_data:
+            self.current_review_list = list(self.cal_idiom_list_data)
+        target_name = clicked_idiom["name"]
+        for idx, idiom in enumerate(self.current_review_list):
+            if idiom["name"] == target_name:
+                self.current_index = idx
+                break
+        self.is_showing_back = False
+        self._show_current_card()
+
+    def _sync_cal_listbox_highlight(self, idiom_name):
+        """同步日历成语列表的高亮到当前卡片"""
+        if not self.cal_idiom_list_data:
+            return
+        for idx, idiom in enumerate(self.cal_idiom_list_data):
+            if idiom["name"] == idiom_name:
+                self.cal_idiom_listbox.selection_clear(0, tk.END)
+                self.cal_idiom_listbox.selection_set(idx)
+                self.cal_idiom_listbox.see(idx)
+                break
 
     def _font_size_up(self):
         self._card_back_size = min(24, self._card_back_size + 1)
@@ -1585,16 +1645,17 @@ class IdoimApp:
         self.is_showing_back = False
         self._update_card_tags()
         self._render_card_front_to(self.card_text, idiom)
-        self._set_card_color(C.CARD_FRONT)
+        self._set_card_color(C.CARD_BACK)
+        self._sync_cal_listbox_highlight(idiom["name"])
 
     def _flip_card(self):
         if not self.current_review_list or self._animating:
             return
         self._animating = True
         if self.is_showing_back:
-            self._animate_flip(C.CARD_BACK, C.CARD_FRONT, self._show_front_content)
+            self._animate_flip(C.CARD_BACK, C.CARD_BACK, self._show_front_content)
         else:
-            self._animate_flip(C.CARD_FRONT, C.CARD_BACK, self._show_back_content)
+            self._animate_flip(C.CARD_BACK, C.CARD_BACK, self._show_back_content)
 
     def _animate_flip(self, from_color, to_color, final_action, step=0, total_steps=12):
         """收缩→切换内容→展开 的翻转动画"""
@@ -1697,7 +1758,7 @@ class IdoimApp:
         self._set_card_color(C.CARD_BACK)
 
     def _next_card(self):
-        if not self.current_review_list or self._animating:
+        if not self.current_review_list or self._animating or self._slide_cooldown:
             return
         if self.current_index < len(self.current_review_list) - 1:
             self.current_index += 1
@@ -1711,15 +1772,18 @@ class IdoimApp:
             self.card_text.insert(tk.END, "复习完成！\n\n", "name")
             self.card_text.insert(tk.END, "你可以重新选择模式\n再次开始复习\n", "hint")
             self.card_text.config(state=tk.DISABLED)
-            self._set_card_color(C.CARD_FRONT)
+            self._set_card_color(C.CARD_BACK)
 
     def _prev_card(self):
-        if not self.current_review_list or self._animating:
+        if not self.current_review_list or self._animating or self._slide_cooldown:
             return
         if self.current_index > 0:
             self.current_index -= 1
             self.is_showing_back = False
             self._slide_card("left")
+
+    def _clear_slide_cooldown(self):
+        self._slide_cooldown = False
 
     def _slide_card(self, direction, step=0, total_steps=14, delay=25):
         """卡片联动滑动：当前卡片滑出，新卡片从对侧紧跟滑入"""
@@ -1790,10 +1854,10 @@ class IdoimApp:
                 fill="#BCBCBC", outline="", tags="slide_temp")
             self._rounded_polygon(
                 c, nx1, y1, nx1 + card_w, y2, r,
-                fill=C.CARD_FRONT, outline="", tags="slide_temp")
+                fill=C.CARD_BACK, outline="", tags="slide_temp")
             self._temp_text = tk.Text(
                 c, font=self.font_card_front,
-                bg=C.CARD_FRONT, fg=C.TEXT_PRIMARY, wrap=tk.WORD,
+                bg=C.CARD_BACK, fg=C.TEXT_PRIMARY, wrap=tk.WORD,
                 relief=tk.FLAT, bd=0, padx=30, pady=20,
                 cursor="arrow", spacing1=2, spacing3=2,
                 highlightthickness=0)
@@ -1810,6 +1874,8 @@ class IdoimApp:
             self._temp_text.destroy()
             self._temp_text = None
             self._animating = False
+            self._slide_cooldown = True
+            self.root.after(300, self._clear_slide_cooldown)
             self._show_current_card()
             c.itemconfig("card_bg", state="normal")
             c.itemconfig(self._card_window_id, state="normal")
