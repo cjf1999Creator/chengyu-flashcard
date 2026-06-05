@@ -93,13 +93,52 @@ def add_idiom(idiom: Dict) -> bool:
 
 def add_idioms_batch(idioms_to_add: List[Dict]) -> int:
     """
-    批量添加成语，返回成功添加的数量
+    批量添加成语，返回成功添加的数量。
+    一次加载 + 一次保存，避免 N+1 磁盘写入。
     """
+    if not idioms_to_add:
+        return 0
+    idioms = load_idioms()
+    existing_map = {i["name"]: idx for idx, i in enumerate(idioms)}
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     success_count = 0
+
     for idiom in idioms_to_add:
-        if add_idiom(idiom):
-            success_count += 1
+        name = idiom.get("name")
+        if not name:
+            continue
+        idiom["added_at"] = now
+        if name in existing_map:
+            idx = existing_map[name]
+            idiom["review_stats"] = idioms[idx].get("review_stats", {})
+            idiom["review_stats"]["last_updated"] = now
+            idioms[idx] = idiom
+        else:
+            idiom["review_stats"] = {
+                "total_reviews": 0,
+                "correct_count": 0,
+                "last_reviewed": None,
+                "last_updated": now,
+                "mastery_level": 0,
+            }
+            idioms.append(idiom)
+            existing_map[name] = len(idioms) - 1
+        success_count += 1
+
+    save_idioms(idioms)
     return success_count
+
+
+def delete_idioms_batch(names: List[str]) -> bool:
+    """批量删除成语，一次加载 + 一次保存"""
+    if not names:
+        return True
+    idioms = load_idioms()
+    name_set = set(names)
+    new_idioms = [i for i in idioms if i["name"] not in name_set]
+    if len(new_idioms) == len(idioms):
+        return False
+    return save_idioms(new_idioms)
 
 
 def update_review_stats(idiom_name: str, correct: bool) -> bool:

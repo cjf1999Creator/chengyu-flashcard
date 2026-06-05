@@ -19,15 +19,32 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parser import parse_idiom_text, parse_multiple_idioms, format_flashcard_back, idiom_to_editable_text, get_last_parse_errors
 from storage import (
     load_idioms, add_idiom, add_idioms_batch, update_review_stats,
-    set_mastery_level, delete_idiom, get_idiom_names, search_idioms, get_review_stats_summary
+    set_mastery_level, delete_idiom, delete_idioms_batch, search_idioms
 )
 
 
+# ==================== 预编译正则 & 查找表 ====================
+
+_RE_INLINE = re.compile(
+    r'(\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+)`|==(.+?)==|~~(.+?)~~|\[([^\]]+)\]\(([^)]+)\))'
+)
+_RE_LABEL_COLON = re.compile(r'^([^:：\n]{1,15})([：:])\s*(.*)', re.DOTALL)
+_RE_CLEAN_NUM1 = re.compile(r'\n+\d+\.\s*$')
+_RE_CLEAN_NUM2 = re.compile(r'\s*\d+\.\s*$')
+_MASTERY_STARS = ["☆☆☆☆☆", "★☆☆☆☆", "★★☆☆☆", "★★★☆☆", "★★★★☆", "★★★★★"]
+
 # ==================== 颜色插值辅助函数 ====================
 
+_rgb_cache = {}
+
 def hex_to_rgb(hex_color):
-    hex_color = hex_color.lstrip('#')
-    return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+    v = _rgb_cache.get(hex_color)
+    if v is not None:
+        return v
+    h = hex_color.lstrip('#')
+    v = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+    _rgb_cache[hex_color] = v
+    return v
 
 def rgb_to_hex(r, g, b):
     return f'#{int(r):02x}{int(g):02x}{int(b):02x}'
@@ -134,6 +151,19 @@ class IdoimApp:
     def _on_close(self):
         self.root.destroy()
 
+    def _on_tab_changed(self, _event):
+        """延迟构建标签页内容"""
+        idx = self.notebook.index("current")
+        if idx in self._tab_built:
+            return
+        self._tab_built.add(idx)
+        if idx == 1:
+            self._build_library_tab()
+        elif idx == 2:
+            self._build_review_tab()
+        elif idx == 3:
+            self._build_stats_tab()
+
     # ==================== macOS 风格组件工厂 ====================
 
     def _mac_button(self, parent, text, command, color=C.ACCENT, fg="white", font=None, padx=16, pady=6, **kw):
@@ -210,25 +240,27 @@ class IdoimApp:
         # 工具栏底部细线
         tk.Frame(self.root, bg=C.TOOLBAR_BORDER, height=1).pack(fill=tk.X)
 
-        # 标签页
+        # 标签页（延迟构建，首次切换时才初始化）
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+        self._tab_built = set()
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         self.import_frame = tk.Frame(self.notebook, bg=C.BG)
         self.notebook.add(self.import_frame, text="  导入  ")
-        self._build_import_tab()
 
         self.library_frame = tk.Frame(self.notebook, bg=C.BG)
         self.notebook.add(self.library_frame, text="  成语库  ")
-        self._build_library_tab()
 
         self.review_frame = tk.Frame(self.notebook, bg=C.BG)
         self.notebook.add(self.review_frame, text="  闪卡复习  ")
-        self._build_review_tab()
 
         self.stats_frame = tk.Frame(self.notebook, bg=C.BG)
         self.notebook.add(self.stats_frame, text="  统计  ")
-        self._build_stats_tab()
+
+        # 首个标签立即构建
+        self._build_import_tab()
+        self._tab_built.add(0)
 
     # ==================== 导入成语 ====================
 
@@ -351,9 +383,12 @@ class IdoimApp:
 
     # ==================== Markdown 渲染 ====================
 
-    def _render_markdown(self, widget, text, base_size=13):
-        """将文本以 Markdown 风格渲染到 tkinter Text 控件"""
-        sz = base_size
+    def _configure_md_tags(self, widget, sz):
+        """配置 Markdown 标签（每个 widget 只执行一次）"""
+        key = f"_md_tags_sz"
+        if getattr(widget, key, None) == sz:
+            return
+        setattr(widget, key, sz)
         widget.tag_configure("md_h1", font=(self._cn_font, sz + 4, "bold"), foreground=C.ACCENT, spacing1=12, spacing3=6)
         widget.tag_configure("md_h2", font=(self._cn_font, sz + 2, "bold"), foreground=C.ACCENT, spacing1=10, spacing3=4)
         widget.tag_configure("md_h3", font=(self._cn_font, sz + 1, "bold"), foreground=C.TEXT_PRIMARY, spacing1=6, spacing3=2)
@@ -370,6 +405,11 @@ class IdoimApp:
         widget.tag_configure("md_highlight", font=(self._cn_font, sz, "bold"), foreground=C.ORANGE)
         widget.tag_configure("md_normal", font=(self._cn_font, sz), foreground=C.TEXT_PRIMARY, spacing1=1, spacing3=1)
         widget.tag_configure("md_label", font=(self._cn_font, sz, "bold"), foreground=C.ACCENT)
+
+    def _render_markdown(self, widget, text, base_size=13):
+        """将文本以 Markdown 风格渲染到 tkinter Text 控件"""
+        sz = base_size
+        self._configure_md_tags(widget, sz)
 
         lines = text.split('\n')
         in_code_block = False
@@ -466,10 +506,8 @@ class IdoimApp:
 
     def _render_inline(self, widget, text, default_tag, base_size):
         """渲染行内 Markdown 格式"""
-        pattern = r'(\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+)`|==(.+?)==|~~(.+?)~~|\[([^\]]+)\]\(([^)]+)\))'
-
         last_end = 0
-        for match in re.finditer(pattern, text):
+        for match in _RE_INLINE.finditer(text):
             start, end = match.span()
             if start > last_end:
                 self._render_label_colon(widget, text[last_end:start], default_tag)
@@ -494,7 +532,7 @@ class IdoimApp:
 
     def _render_label_colon(self, widget, text, default_tag):
         """渲染带冒号的标签（如"语义侧重：内容"）"""
-        label_match = re.match(r'^([^:：\n]{1,15})([：:])\s*(.*)', text, re.DOTALL)
+        label_match = _RE_LABEL_COLON.match(text)
         if label_match:
             widget.insert(tk.END, label_match.group(1) + label_match.group(2), "md_label")
             rest = label_match.group(3)
@@ -669,8 +707,7 @@ class IdoimApp:
             return
         msg = f"确定要删除「{names[0]}」吗？" if len(names) == 1 else f"确定要删除选中的 {len(names)} 个成语吗？"
         if messagebox.askyesno("确认删除", msg):
-            for name in names:
-                delete_idiom(name)
+            delete_idioms_batch(names)
             self._refresh_library()
             self.detail_text.delete("1.0", tk.END)
             self._refresh_stats()
@@ -735,19 +772,13 @@ class IdoimApp:
 
         self._enter_view_mode()
         self.detail_text.config(state=tk.NORMAL)
-        updated = None
-        for idiom in load_idioms():
+        for i, idiom in enumerate(self.all_idioms):
             if idiom["name"] == parsed["name"]:
-                updated = idiom
+                self._show_idiom_detail(idiom)
+                self.idiom_listbox.selection_clear(0, tk.END)
+                self.idiom_listbox.selection_set(i)
+                self.idiom_listbox.see(i)
                 break
-        if updated:
-            self._show_idiom_detail(updated)
-            for i, idiom in enumerate(self.all_idioms):
-                if idiom["name"] == parsed["name"]:
-                    self.idiom_listbox.selection_clear(0, tk.END)
-                    self.idiom_listbox.selection_set(i)
-                    self.idiom_listbox.see(i)
-                    break
 
     def _cancel_edit(self):
         self.is_editing = False
@@ -768,14 +799,7 @@ class IdoimApp:
             messagebox.showwarning("提示", "请先选择要导出的成语！\n按住 Cmd/Ctrl 可多选。")
             return
         # 获取选中的成语完整数据
-        selected_idioms = []
-        for i in selection:
-            if i < len(self.all_idioms):
-                idioms_all = load_idioms()
-                for idiom in idioms_all:
-                    if idiom["name"] == self.all_idioms[i]["name"]:
-                        selected_idioms.append(idiom)
-                        break
+        selected_idioms = [self.all_idioms[i] for i in selection if i < len(self.all_idioms)]
         self._export_idioms = selected_idioms
         count = len(selected_idioms)
 
@@ -812,7 +836,7 @@ class IdoimApp:
             messagebox.showerror("导出失败", str(e))
 
     def _get_mastery_stars(self, level):
-        return "★" * level + "☆" * (5 - level)
+        return _MASTERY_STARS[max(0, min(5, level))]
 
     def _idiom_core_meaning(self, idiom):
         """提取成语的核心释义（第一个知识点）"""
@@ -840,9 +864,8 @@ class IdoimApp:
     def _clean_meaning(text):
         """清理释义文本中的序号残留和空白"""
         text = text.strip()
-        # 去掉末尾的孤立序号如 "2." "3." 等
-        text = re.sub(r'\n+\d+\.\s*$', '', text)
-        text = re.sub(r'\s*\d+\.\s*$', '', text)
+        text = _RE_CLEAN_NUM1.sub('', text)
+        text = _RE_CLEAN_NUM2.sub('', text)
         return text.strip()
 
     def _export_as_markdown(self, filepath):
@@ -1007,13 +1030,25 @@ class IdoimApp:
 
         # 星期标题
         weekdays = ["一", "二", "三", "四", "五", "六", "日"]
-        for wd in weekdays:
+        for ci, wd in enumerate(weekdays):
             tk.Label(self.cal_grid_frame, text=wd, font=(self._ui_font, 9),
-                     bg=C.SURFACE, fg=C.TEXT_TERTIARY, width=3).grid(row=0, column=weekdays.index(wd), padx=1, pady=(0, 2))
+                     bg=C.SURFACE, fg=C.TEXT_TERTIARY, width=3).grid(row=0, column=ci, padx=1, pady=(0, 2))
 
-        # 日历日期按钮容器
+        # 日历日期按钮容器 — 预创建31天控件，避免每次点击重建
         self.cal_buttons_frame = tk.Frame(self.cal_grid_frame, bg=C.SURFACE)
         self.cal_buttons_frame.grid(row=1, column=0, columnspan=7, sticky="ew")
+        for c in range(7):
+            self.cal_buttons_frame.columnconfigure(c, weight=1)
+
+        self._cal_cells = []
+        for _ in range(31):
+            frame = tk.Frame(self.cal_buttons_frame, bg=C.SURFACE)
+            label = tk.Label(frame, text="", font=(self._ui_font, 10),
+                             bg=C.SURFACE, fg=C.TEXT_TERTIARY, width=3, height=1, cursor="hand2")
+            label.pack()
+            dot = tk.Label(frame, text="", font=(self._ui_font, 7), bg=C.SURFACE, fg=C.ACCENT)
+            frame.grid_remove()
+            self._cal_cells.append((frame, label, dot))
 
         # 日历状态
         self._cal_year = date.today().year
@@ -1132,8 +1167,9 @@ class IdoimApp:
             widget.bind("<Button-5>", self._on_card_scroll)
             widget.bind("<ButtonPress-1>", self._on_swipe_press)
             widget.bind("<ButtonRelease-1>", self._on_swipe_release)
-        self.detail_text.bind("<ButtonPress-1>", self._on_lib_swipe_press)
-        self.detail_text.bind("<ButtonRelease-1>", self._on_lib_swipe_release)
+        if hasattr(self, 'detail_text'):
+            self.detail_text.bind("<ButtonPress-1>", self._on_lib_swipe_press)
+            self.detail_text.bind("<ButtonRelease-1>", self._on_lib_swipe_release)
 
     def _draw_card_bg(self):
         """绘制卡片圆角背景和阴影"""
@@ -1199,6 +1235,18 @@ class IdoimApp:
             x1, y1 + r, x1, y1,
         ]
         return canvas.create_polygon(points, smooth=True, **kwargs)
+
+    @staticmethod
+    def _set_rounded_coords(canvas, item_id, x1, y1, x2, y2, r):
+        points = [
+            x1 + r, y1, x2 - r, y1,
+            x2, y1, x2, y1 + r,
+            x2, y2 - r, x2, y2,
+            x2 - r, y2, x1 + r, y2,
+            x1, y2, x1, y2 - r,
+            x1, y1 + r, x1, y1,
+        ]
+        canvas.coords(item_id, *points)
 
     def _set_card_color(self, color):
         self._card_color = color
@@ -1353,15 +1401,6 @@ class IdoimApp:
             self._cal_month += 1
         self._render_calendar()
 
-    def _build_date_counts(self):
-        """统计每个日期的成语数量"""
-        self._cal_date_counts = {}
-        for idiom in load_idioms():
-            added = idiom.get("added_at", "")
-            if added:
-                day_str = added[:10]  # "YYYY-MM-DD"
-                self._cal_date_counts[day_str] = self._cal_date_counts.get(day_str, 0) + 1
-
     def _on_container_resize(self, _event):
         """限制卡片容器宽度和高度（防抖）"""
         if getattr(self, '_in_do_resize', False):
@@ -1381,74 +1420,62 @@ class IdoimApp:
             self._in_do_resize = False
 
     def _render_calendar(self):
-        """渲染日历网格"""
-        self._build_date_counts()
-        self.cal_month_label.config(text=f"{self._cal_year}年{self._cal_month}月")
+        """渲染日历网格（复用预创建的控件）"""
+        idioms = load_idioms()
+        self._cal_date_counts = {}
+        for idiom in idioms:
+            added = idiom.get("added_at", "")
+            if added:
+                day_str = added[:10]
+                self._cal_date_counts[day_str] = self._cal_date_counts.get(day_str, 0) + 1
 
-        # 清除旧的日期按钮
-        for widget in self.cal_buttons_frame.winfo_children():
-            widget.destroy()
+        self.cal_month_label.config(text=f"{self._cal_year}年{self._cal_month}月")
 
         today = date.today()
         month_days = calendar.monthrange(self._cal_year, self._cal_month)[1]
-        first_weekday = calendar.monthrange(self._cal_year, self._cal_month)[0]  # 0=Monday
+        first_weekday = calendar.monthrange(self._cal_year, self._cal_month)[0]
 
         row, col = 0, first_weekday
-        for day in range(1, month_days + 1):
-            day_str = f"{self._cal_year}-{self._cal_month:02d}-{day:02d}"
-            is_today = (self._cal_year == today.year and self._cal_month == today.month and day == today.day)
-            is_selected = (self._cal_selected == day_str)
-            count = self._cal_date_counts.get(day_str, 0)
+        for i, (frame, label, dot) in enumerate(self._cal_cells):
+            if i < month_days:
+                day = i + 1
+                day_str = f"{self._cal_year}-{self._cal_month:02d}-{day:02d}"
+                is_today = (self._cal_year == today.year and self._cal_month == today.month and day == today.day)
+                is_selected = (self._cal_selected == day_str)
+                count = self._cal_date_counts.get(day_str, 0)
 
-            btn_frame = tk.Frame(self.cal_buttons_frame, bg=C.SURFACE)
-            btn_frame.grid(row=row, column=col, padx=1, pady=1, sticky="nsew")
+                if is_selected:
+                    bg, fg = C.ACCENT, "white"
+                elif is_today:
+                    bg, fg = "#E8F0FE", C.ACCENT
+                elif count > 0:
+                    bg, fg = "#F0F4FF", C.TEXT_PRIMARY
+                else:
+                    bg, fg = C.SURFACE, C.TEXT_TERTIARY
 
-            if is_selected:
-                bg = C.ACCENT
-                fg = "white"
-            elif is_today:
-                bg = "#E8F0FE"
-                fg = C.ACCENT
-            elif count > 0:
-                bg = "#F0F4FF"
-                fg = C.TEXT_PRIMARY
+                frame.configure(bg=bg)
+                label.configure(text=str(day), bg=bg, fg=fg,
+                                font=(self._ui_font, 10, "bold" if (is_today or is_selected) else "normal"))
+                label.unbind("<Button-1>")
+                label.bind("<Button-1>", lambda e, d=day_str: self._on_cal_date_click(d))
+                if count > 0 and not is_selected:
+                    dot.configure(text=str(count), bg=bg)
+                    dot.unbind("<Button-1>")
+                    dot.bind("<Button-1>", lambda e, d=day_str: self._on_cal_date_click(d))
+                else:
+                    dot.configure(text="", bg=bg)
+
+                frame.grid(row=row, column=col, padx=1, pady=1, sticky="nsew")
             else:
-                bg = C.SURFACE
-                fg = C.TEXT_TERTIARY
-
-            btn = tk.Label(
-                btn_frame, text=str(day),
-                font=(self._ui_font, 10, "bold" if (is_today or is_selected) else "normal"),
-                bg=bg, fg=fg, width=3, height=1,
-                cursor="hand2"
-            )
-            btn.pack(pady=(0, 0))
-
-            # 有成语的日期下方显示小圆点
-            if count > 0 and not is_selected:
-                dot = tk.Label(btn_frame, text=f"{count}", font=(self._ui_font, 7),
-                               bg=bg, fg=C.ACCENT)
-                dot.pack()
-
-            btn.bind("<Button-1>", lambda e, d=day_str: self._on_cal_date_click(d))
-            if count > 0 and not is_selected:
-                btn_frame.bind("<Button-1>", lambda e, d=day_str: self._on_cal_date_click(d))
-                # 也给 dot 绑定点击
-                for child in btn_frame.winfo_children():
-                    child.bind("<Button-1>", lambda e, d=day_str: self._on_cal_date_click(d))
+                frame.grid_remove()
 
             col += 1
             if col > 6:
                 col = 0
                 row += 1
 
-        # 确保列等宽
-        for c in range(7):
-            self.cal_buttons_frame.columnconfigure(c, weight=1)
-
-        # 更新选中日期信息
         self._update_cal_info()
-        self._update_cal_idiom_list()
+        self._update_cal_idiom_list(idioms)
 
     def _on_cal_date_click(self, day_str):
         """点击日历日期"""
@@ -1464,7 +1491,7 @@ class IdoimApp:
         else:
             self.cal_info_label.config(text="选择日期以按日期复习")
 
-    def _update_cal_idiom_list(self):
+    def _update_cal_idiom_list(self, idioms=None):
         """更新当日成语列表"""
         if not hasattr(self, 'cal_idiom_listbox'):
             return
@@ -1472,8 +1499,9 @@ class IdoimApp:
         self.cal_idiom_list_data = []
         if not self._cal_selected:
             return
-        all_idioms = load_idioms()
-        filtered = [i for i in all_idioms if i.get("added_at", "")[:10] == self._cal_selected]
+        if idioms is None:
+            idioms = load_idioms()
+        filtered = [i for i in idioms if i.get("added_at", "")[:10] == self._cal_selected]
         filtered.sort(key=lambda x: x.get("added_at", ""))
         for idiom in filtered:
             mastery = idiom.get("review_stats", {}).get("mastery_level", 0)
@@ -1593,7 +1621,7 @@ class IdoimApp:
         self._show_current_card()
 
     def _update_card_tags(self, tw=None):
-        """配置卡片文本标签样式，tw=None 时配置 self.card_text 和所有临时控件"""
+        """配置卡片文本标签样式"""
         tags = {
             "name": dict(font=(self._cn_font, self._card_front_size, "bold"), foreground=C.TEXT_PRIMARY, justify=tk.CENTER),
             "hint": dict(font=(self._ui_font, max(10, self._card_front_size // 3)), foreground=C.TEXT_TERTIARY, justify=tk.CENTER),
@@ -1603,11 +1631,6 @@ class IdoimApp:
             "divider": dict(font=(self._ui_font, 8), foreground=C.BORDER_LIGHT, justify=tk.CENTER),
         }
         targets = [tw] if tw else [self.card_text]
-        if not tw:
-            for attr in ("_temp_text", "_temp_text_old"):
-                t = getattr(self, attr, None)
-                if t is not None:
-                    targets.append(t)
         for widget in targets:
             for tag, cfg in tags.items():
                 widget.tag_configure(tag, **cfg)
@@ -1658,7 +1681,22 @@ class IdoimApp:
             self._animate_flip(C.CARD_BACK, C.CARD_BACK, self._show_back_content)
 
     def _animate_flip(self, from_color, to_color, final_action, step=0, total_steps=12):
-        """收缩→切换内容→展开 的翻转动画"""
+        """收缩→切换内容→展开 的翻转动画（复用 canvas 多边形）"""
+        c = self.card_frame
+        cw = c.winfo_width()
+        ch = c.winfo_height()
+        if cw < 20 or ch < 20:
+            self._animating = False
+            final_action()
+            return
+
+        if step == 0:
+            c.delete("card_bg")
+            self._flip_shadow_id = self._rounded_polygon(
+                c, 0, 0, 1, 1, 12, fill="#BCBCBC", outline="", tags="card_bg")
+            self._flip_card_id = self._rounded_polygon(
+                c, 0, 0, 1, 1, 12, fill=from_color, outline="", tags="card_bg")
+
         if step <= total_steps // 2:
             t = step / (total_steps // 2)
             scale_x = 1.0 - t
@@ -1671,29 +1709,18 @@ class IdoimApp:
 
         self._set_card_color(color)
 
-        c = self.card_frame
-        cw = c.winfo_width()
-        ch = c.winfo_height()
-        if cw < 20 or ch < 20:
-            self._animating = False
-            final_action()
-            return
         x1, y1, _, _, card_w, card_h = self._card_rect()
         r = 12
         so = 4
         visible_w = max(2, int(card_w * scale_x))
         offset_x = x1 + (card_w - visible_w) // 2
 
-        c.delete("card_bg")
         if scale_x > 0.05:
-            self._rounded_polygon(
-                c, offset_x + so, y1 + so, offset_x + visible_w - so,
-                y1 + card_h + so, r,
-                fill="#BCBCBC", outline="", tags="card_bg")
-            self._card_rect_id = self._rounded_polygon(
-                c, offset_x, y1, offset_x + visible_w,
-                y1 + card_h, r,
-                fill=self._card_color, outline="", tags="card_bg")
+            self._set_rounded_coords(c, self._flip_shadow_id,
+                                     offset_x + so, y1 + so, offset_x + visible_w - so, y1 + card_h + so, r)
+            self._set_rounded_coords(c, self._flip_card_id,
+                                     offset_x, y1, offset_x + visible_w, y1 + card_h, r)
+            c.itemconfig(self._flip_card_id, fill=self._card_color)
 
         if step == total_steps // 2:
             final_action()
@@ -1715,8 +1742,12 @@ class IdoimApp:
         if not self.current_review_list:
             return None
         idiom = self.current_review_list[self.current_index]
-        fresh_idioms = {i["name"]: i for i in load_idioms()}
-        return fresh_idioms.get(idiom["name"], idiom)
+        if not hasattr(self, '_idiom_name_map') or self._idiom_name_map is None:
+            self._idiom_name_map = {i["name"]: i for i in load_idioms()}
+        return self._idiom_name_map.get(idiom["name"], idiom)
+
+    def _invalidate_idiom_cache(self):
+        self._idiom_name_map = None
 
     def _show_front_content(self):
         self._show_current_card()
@@ -1785,6 +1816,20 @@ class IdoimApp:
     def _clear_slide_cooldown(self):
         self._slide_cooldown = False
 
+    def _get_slide_text(self, tag):
+        """获取或懒创建滑动用的持久化 Text 控件"""
+        attr = f"_slide_{tag}"
+        tw = getattr(self, attr, None)
+        if tw is None:
+            tw = tk.Text(
+                self.card_frame, font=self.font_card_front,
+                bg=C.CARD_BACK, fg=C.TEXT_PRIMARY, wrap=tk.WORD,
+                relief=tk.FLAT, bd=0, padx=30, pady=20,
+                cursor="arrow", spacing1=2, spacing3=2,
+                highlightthickness=0)
+            setattr(self, attr, tw)
+        return tw
+
     def _slide_card(self, direction, step=0, total_steps=14, delay=25):
         """卡片联动滑动：当前卡片滑出，新卡片从对侧紧跟滑入"""
         c = self.card_frame
@@ -1813,38 +1858,35 @@ class IdoimApp:
             c.itemconfig("card_bg", state="hidden")
             c.itemconfig(self._card_window_id, state="hidden")
 
-            # 方向：左滑（看上一张）→ 整体右移；右滑（看下一张）→ 整体左移
+            # 方向
             if direction == "left":
                 old_color = self._card_color
                 old_idx = self.current_index + 1
-                new_offset = -card_w  # 新卡片在左侧
-                total_dx = card_w     # 整体右移
+                new_offset = -card_w
+                total_dx = card_w
             else:
                 old_color = self._card_color
                 old_idx = self.current_index - 1
-                new_offset = card_w   # 新卡片在右侧
-                total_dx = -card_w    # 整体左移
+                new_offset = card_w
+                total_dx = -card_w
 
             self._slide_total_dx = total_dx
             self._slide_prev_dx = 0
 
-            # --- 旧卡片（当前位置） ---
+            # --- 旧卡片 ---
+            c.delete("slide_temp")
             self._rounded_polygon(
                 c, x1 + so, y1 + so, x1 + card_w + so, y2 + so, r,
                 fill="#BCBCBC", outline="", tags="slide_temp")
             self._rounded_polygon(
                 c, x1, y1, x1 + card_w, y2, r,
                 fill=old_color, outline="", tags="slide_temp")
-            self._temp_text_old = tk.Text(
-                c, font=self.font_card_front,
-                bg=old_color, fg=C.TEXT_PRIMARY, wrap=tk.WORD,
-                relief=tk.FLAT, bd=0, padx=30, pady=20,
-                cursor="arrow", spacing1=2, spacing3=2,
-                highlightthickness=0)
-            self._update_card_tags()
+            txt_old = self._get_slide_text("old")
+            txt_old.config(bg=old_color)
+            self._update_card_tags(txt_old)
             old_idiom = self.current_review_list[old_idx]
-            self._render_card_front_to(self._temp_text_old, old_idiom)
-            c.create_window(ip_x, ip_y, window=self._temp_text_old,
+            self._render_card_front_to(txt_old, old_idiom)
+            c.create_window(ip_x, ip_y, window=txt_old,
                            width=tw, height=th, anchor="nw", tags="slide_temp")
 
             # --- 新卡片（偏移位置） ---
@@ -1855,24 +1897,16 @@ class IdoimApp:
             self._rounded_polygon(
                 c, nx1, y1, nx1 + card_w, y2, r,
                 fill=C.CARD_BACK, outline="", tags="slide_temp")
-            self._temp_text = tk.Text(
-                c, font=self.font_card_front,
-                bg=C.CARD_BACK, fg=C.TEXT_PRIMARY, wrap=tk.WORD,
-                relief=tk.FLAT, bd=0, padx=30, pady=20,
-                cursor="arrow", spacing1=2, spacing3=2,
-                highlightthickness=0)
-            self._update_card_tags()
+            txt_new = self._get_slide_text("new")
+            txt_new.config(bg=C.CARD_BACK)
+            self._update_card_tags(txt_new)
             next_idiom = self.current_review_list[self.current_index]
-            self._render_card_front_to(self._temp_text, next_idiom)
-            c.create_window(nx1 + r, ip_y, window=self._temp_text,
+            self._render_card_front_to(txt_new, next_idiom)
+            c.create_window(nx1 + r, ip_y, window=txt_new,
                            width=tw, height=th, anchor="nw", tags="slide_temp")
 
         if step > total_steps:
             c.delete("slide_temp")
-            self._temp_text_old.destroy()
-            self._temp_text_old = None
-            self._temp_text.destroy()
-            self._temp_text = None
             self._animating = False
             self._slide_cooldown = True
             self.root.after(300, self._clear_slide_cooldown)
@@ -1949,13 +1983,21 @@ class IdoimApp:
         self.stats_display.tag_configure("dim", foreground=C.TEXT_TERTIARY)
 
     def _refresh_stats(self):
-        summary = get_review_stats_summary()
+        self._invalidate_idiom_cache()
         idioms = load_idioms()
+        total = len(idioms)
+        reviewed = sum(1 for i in idioms if i.get("review_stats", {}).get("total_reviews", 0) > 0)
+        mastered = sum(1 for i in idioms if i.get("review_stats", {}).get("mastery_level", 0) >= 4)
+        levels = [i.get("review_stats", {}).get("mastery_level", 0) for i in idioms]
+        avg_mastery = round(sum(levels) / len(levels), 2) if levels else 0
+        summary = {"total": total, "reviewed": reviewed, "mastered": mastered, "avg_mastery": avg_mastery}
 
         self.stats_header.config(
             text=f"{summary['total']} 个成语  |  {summary['mastered']} 已掌握  |  {summary['reviewed']} 已复习"
         )
 
+        if not hasattr(self, 'stats_display'):
+            return
         self.stats_display.config(state=tk.NORMAL)
         self.stats_display.delete("1.0", tk.END)
 
